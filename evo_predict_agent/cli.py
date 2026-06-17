@@ -12,7 +12,7 @@ from .memory import JsonlMemory
 from .predictor import AutoMLPredictor
 from .pre_evolver import build_pre_evolution_card
 from .signals import extract_signals, default_family_from_signals
-from .evomap_gep import gep_info, verify_asset
+from .evomap_gep import gep_info, verify_asset, validate_schema
 from .capability import CapabilityEvaluator
 
 ROOT = Path.cwd()
@@ -189,7 +189,12 @@ def cmd_capability_solidify(args):
     else:
         report = evaluator.run_benchmark()
     capsules = evaluator.solidify_improvements(report)
-    print(json.dumps({"ok": True, "capsules_created": len(capsules), "asset_ids": [c.get("asset_id") for c in capsules]}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "ok": True,
+        "capsules_created": len(capsules),
+        "capsule_asset_ids": [x["capsule"].get("asset_id") for x in capsules],
+        "event_asset_ids": [x["event"].get("asset_id") for x in capsules],
+    }, ensure_ascii=False, indent=2))
 
 
 def cmd_gep_info(_args):
@@ -220,9 +225,14 @@ def cmd_export_gep(args):
 def cmd_verify_assets(_args):
     store = AssetStore(ASSETS_DIR)
     store.init_defaults()
-    assets = store.load_genes() + store.load_capsules()
+    assets = store.load_genes() + store.load_capsules() + store.load_events()
     results = [{"id": a.get("id"), "type": a.get("type"), **verify_asset(a)} for a in assets]
-    print(json.dumps({"ok": all(r.get("ok") for r in results), "results": results}, ensure_ascii=False, indent=2))
+    print(json.dumps({"ok": all(r.get("ok") for r in results), "check": "asset_id_hash", "results": results}, ensure_ascii=False, indent=2))
+
+
+def cmd_gep_schema_validate(_args):
+    AssetStore(ASSETS_DIR).init_defaults()
+    print(json.dumps(validate_schema(ASSETS_DIR), ensure_ascii=False, indent=2))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -254,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("gep-info"); sp.set_defaults(func=cmd_gep_info)
     sp = sub.add_parser("export-gep"); sp.add_argument("--out", default="memory/gep_bundle.local.json"); sp.set_defaults(func=cmd_export_gep)
     sp = sub.add_parser("verify-assets"); sp.set_defaults(func=cmd_verify_assets)
+    sp = sub.add_parser("gep-schema-validate"); sp.set_defaults(func=cmd_gep_schema_validate)
     sp = sub.add_parser("demo"); sp.set_defaults(func=cmd_demo)
     return p
 

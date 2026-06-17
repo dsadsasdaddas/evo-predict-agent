@@ -3,15 +3,15 @@ from __future__ import annotations
 import re
 
 _RULES: list[tuple[str, str]] = [
-    (r"\b401\b|unauthorized|auth|login|cookie|session|token|callback", "auth"),
+    (r"performance|slow|latency|cost|token-cost|tokens?|memory|burns too many", "performance"),
+    (r"\b401\b|unauthorized|\bauth\b|\blogin\b|\bcookie\b|\bsession\b|\btoken\b|\bcallback\b", "auth"),
     (r"typescript|\bts\d{4}\b|type error|tsc|cannot assign", "typescript-error"),
-    (r"build failed|next build|webpack|vite|missing env|env var", "build-fail"),
-    (r"timeout|timed out|etimedout|abortcontroller|hang", "timeout"),
-    (r"test failed|assertionerror|unit test|pytest|jest|vitest", "test-failure"),
+    (r"build failed|next build|webpack|\bvite\b|missing env|env var", "build-fail"),
+    (r"timeout|timed out|etimedout|abortcontroller|hang|hangs", "timeout"),
+    (r"test failed|assertionerror|unit test|pytest|jest|\bvitest\b", "test-failure"),
     (r"api|schema|contract|json|payload|response", "api-contract"),
     (r"database|sql|postgres|supabase|migration|prisma", "database"),
     (r"permission|forbidden|\b403\b|policy|role", "permission"),
-    (r"performance|slow|latency|cost|token-cost|memory", "performance"),
     (r"ui|css|layout|component|react|tailwind", "frontend-ui"),
 ]
 

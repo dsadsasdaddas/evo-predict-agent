@@ -7,10 +7,12 @@
   "scripts": {
     "gep:info": "node scripts/gep_bridge.mjs info",
     "gep:stamp": "node scripts/gep_bridge.mjs stamp",
-    "mcp:local": "GEP_ASSETS_DIR=$PWD/assets GEP_MEMORY_DIR=$PWD/memory/evolution npx -y @evomap/gep-mcp-server"
+    "mcp:local": "GEP_ASSETS_DIR=$PWD/assets GEP_MEMORY_DIR=$PWD/memory/evolution npx -y @evomap/gep-mcp-server",
+    "gep:schema-validate": "node scripts/gep_bridge.mjs validate-schema"
   },
   "dependencies": {
     "@evomap/gep-sdk": "latest",
-    "@evomap/gep-mcp-server": "latest"
+    "@evomap/gep-mcp-server": "latest",
+    "ajv": "^8.17.1"
   }
 }

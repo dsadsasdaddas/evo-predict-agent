@@ -11,7 +11,7 @@ vs
  evolved agent（复用 EvoMap Gene/Capsule）
 ```
 
-如果 evolved agent 在策略质量、Gene 复用、Capsule 复用、验证意识上得分更高，就把这次提升固化为新的 Capsule / CapabilityEvaluationReport。
+如果 evolved agent 在同题 benchmark 上通过 capability validation，并且相关 Gene/Capsule 复用带来分数提升，才把这次提升固化为新的 Capsule / EvolutionEvent / CapabilityEvaluationReport。
 
 ## 核心闭环
 
@@ -19,9 +19,9 @@ vs
 Capability Benchmark
   -> baseline answer
   -> evolved answer with GEP Gene/Capsule
-  -> score before/after
+  -> score before/after with validation gates
   -> CapabilityEvaluationReport
-  -> solidify successful deltas into Capsules
+  -> solidify successful deltas into Capsules + EvolutionEvents
   -> next run reuses stronger memory
 ```
 
@@ -32,7 +32,7 @@ EvoMap 的核心不是模型权重训练，而是 **agent runtime capability evo
 - `Gene`：可复用策略
 - `Capsule`：具体成功/失败经验
 - `asset_id`：官方 GEP 内容哈希
-- `ValidationReport / CapabilityEvaluationReport`：证明复用后能力提升
+- `EvolutionEvent / CapabilityEvaluationReport`：证明复用后能力提升
 - `MCP`：让其他 agent 读取/复用这些资产
 
 本项目用本地 benchmark 证明：同样的问题集，使用 GEP 资产后的 agent 比 baseline 更会解决问题。
@@ -46,6 +46,7 @@ python3 -m evo_predict_agent.cli init
 python3 -m evo_predict_agent.cli capability-eval --out memory/capability_report.json
 python3 -m evo_predict_agent.cli capability-solidify --report memory/capability_report.json
 python3 -m evo_predict_agent.cli verify-assets
+python3 -m evo_predict_agent.cli gep-schema-validate
 python3 -m evo_predict_agent.cli export-gep --out memory/gep_bundle.local.json
 ```
 
@@ -68,6 +69,7 @@ python3 -m evo_predict_agent.cli capability-solidify
 python3 -m evo_predict_agent.cli verify-assets
 python3 -m evo_predict_agent.cli export-gep
 python3 -m evo_predict_agent.cli gep-info
+python3 -m evo_predict_agent.cli gep-schema-validate
 npm run mcp:local
 ```
 
@@ -120,6 +122,7 @@ Python 侧验证：
 ```bash
 python3 -m evo_predict_agent.cli gep-info
 python3 -m evo_predict_agent.cli verify-assets
+python3 -m evo_predict_agent.cli gep-schema-validate
 python3 -m evo_predict_agent.cli export-gep --out memory/gep_bundle.local.json
 ```
 
@@ -136,3 +139,7 @@ MCP 配置示例：
 ```
 
 默认仍然 **不联网、不 publish、不上传 Hub**。如果后续要接 EvoMap Hub，再显式配置 `EVOMAP_NODE_ID / EVOMAP_NODE_SECRET / EVOMAP_API_KEY`。
+
+## 当前边界
+
+这不是模型权重 fine-tuning，而是 EvoMap 风格的 test-time/runtime 能力提升：通过 Gene 选择、Capsule 召回、Validation gate、EvolutionEvent 审计，让 agent 下一次做同类能力任务时更稳。旧的 `predict/pre-evolve` 只是保留实验入口，不是主线。

@@ -12,3 +12,4 @@ memory/
 assets/genes.json
 assets/capsules.json
 node_modules/
+assets/events.jsonl

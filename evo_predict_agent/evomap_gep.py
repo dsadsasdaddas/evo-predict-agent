@@ -55,3 +55,7 @@ def verify_asset(asset: dict[str, Any]) -> dict[str, Any]:
         return _run_bridge("verify", asset)
     except Exception:
         return {"ok": asset.get("asset_id") == compute_asset_id(asset), "fallback": True}
+
+
+def validate_schema(assets_dir: str | Path = "assets") -> dict[str, Any]:
+    return _run_bridge("validate-schema", {"assets_dir": str(assets_dir)})
