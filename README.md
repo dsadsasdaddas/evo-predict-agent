@@ -1,63 +1,104 @@
 # Evo Predict Agent
 
-一个独立于比赛仓库的 **预测型自进化 Agent** 原型。
+一个基于 **EvoMap GEP 技术栈** 的 **能力自进化 Agent** 原型。
 
-它借鉴 `/Users/wangyue/evo/external/atomation` 的自动实验闭环：
-
-```text
-memory -> planner -> action -> feedback -> insight -> next run
-```
-
-但这里不再做比赛分类/推荐任务，而是做：
+重点不是“预测用户下一类问题”，而是验证：
 
 ```text
-用户历史问题 / 项目状态 / 错误日志
-  -> 预测下一类问题
-  -> 自动选择 Gene / Capsule
-  -> 生成 pre-evolution card
-  -> 用户真实提问后记录 outcome
-  -> 下一次预测更准
+同一组任务
+baseline agent（无 Gene/Capsule）
+vs
+ evolved agent（复用 EvoMap Gene/Capsule）
 ```
 
-## 设计原则
+如果 evolved agent 在策略质量、Gene 复用、Capsule 复用、验证意识上得分更高，就把这次提升固化为新的 Capsule / CapabilityEvaluationReport。
 
-- **不动比赛仓库**：本仓库是新开本地 Git repo。
-- **本地优先**：默认不联网、不上传 prompt、不发代码、不接 EvoMap Hub。
-- **透明 AutoML**：不是黑盒算法，而是多个可解释 predictor 做 rolling backtest，自动选择当前最靠谱的 predictor。
-- **GEP 兼容资产**：用 Gene / Capsule / EvolutionEvent 的思路组织经验，后续可以接 EvoMap schema。
+## 核心闭环
+
+```text
+Capability Benchmark
+  -> baseline answer
+  -> evolved answer with GEP Gene/Capsule
+  -> score before/after
+  -> CapabilityEvaluationReport
+  -> solidify successful deltas into Capsules
+  -> next run reuses stronger memory
+```
+
+## 为什么这是 EvoMap 逻辑
+
+EvoMap 的核心不是模型权重训练，而是 **agent runtime capability evolution**：
+
+- `Gene`：可复用策略
+- `Capsule`：具体成功/失败经验
+- `asset_id`：官方 GEP 内容哈希
+- `ValidationReport / CapabilityEvaluationReport`：证明复用后能力提升
+- `MCP`：让其他 agent 读取/复用这些资产
+
+本项目用本地 benchmark 证明：同样的问题集，使用 GEP 资产后的 agent 比 baseline 更会解决问题。
 
 ## 快速 demo
 
 ```bash
 cd /Users/wangyue/evo/evo-predict-agent
-python -m evo_predict_agent.cli init
-python -m evo_predict_agent.cli demo
-python -m evo_predict_agent.cli predict --context "changed app/api/auth/callback route and now API returns 401 after login"
-python -m evo_predict_agent.cli pre-evolve --context "Next.js build failed with missing env and TS error"
+npm install
+python3 -m evo_predict_agent.cli init
+python3 -m evo_predict_agent.cli capability-eval --out memory/capability_report.json
+python3 -m evo_predict_agent.cli capability-solidify --report memory/capability_report.json
+python3 -m evo_predict_agent.cli verify-assets
+python3 -m evo_predict_agent.cli export-gep --out memory/gep_bundle.local.json
 ```
 
-## CLI
+你会看到类似：
+
+```json
+{
+  "baseline_avg": 0.2,
+  "evolved_avg": 0.75,
+  "absolute_improvement": 0.55,
+  "relative_improvement_pct": 275
+}
+```
+
+## 当前 CLI
 
 ```bash
-python -m evo_predict_agent.cli init
-python -m evo_predict_agent.cli ingest --question "登录后为什么 401" --family auth-bug --outcome success --summary "fixed cookie boundary"
-python -m evo_predict_agent.cli predict --context "auth callback 401"
-python -m evo_predict_agent.cli pre-evolve --context "auth callback 401"
-python -m evo_predict_agent.cli record-outcome --prediction-id <id> --actual-family auth-bug --resolved true --summary "hit prediction"
-python -m evo_predict_agent.cli status
+python3 -m evo_predict_agent.cli capability-eval
+python3 -m evo_predict_agent.cli capability-solidify
+python3 -m evo_predict_agent.cli verify-assets
+python3 -m evo_predict_agent.cli export-gep
+python3 -m evo_predict_agent.cli gep-info
+npm run mcp:local
+```
+
+旧的 `predict/pre-evolve` 命令仍保留为辅助实验，但不再是主叙事。
+
+## 关键文件
+
+```text
+evo_predict_agent/capability.py   # baseline vs evolved 能力评测闭环
+evo_predict_agent/assets.py       # Gene/Capsule store
+evo_predict_agent/evomap_gep.py   # Python -> @evomap/gep-sdk bridge
+evo_predict_agent/cli.py          # CLI
+scripts/gep_bridge.mjs            # 官方 GEP SDK 调用
+.mcp/gep-local.json               # 本地 MCP server 配置
 ```
 
 ## 与 atomation 的关系
 
-`atomation` 是比赛用自动机器学习实验 Agent。这个仓库只抽象它的通用架构思想：
+`atomation` 是比赛用自动机器学习实验 Agent，本仓库不修改它。
 
-- `Budget`：预算意识
-- `Memory`：JSONL 逐轮记录
-- `Planner/Predictor`：LLM/规则/模型选择
-- `InsightStore`：跨运行经验
-- `Trajectory`：可审计过程
+我们借鉴它的“实验闭环”思想，但改造成 EvoMap 能力进化闭环：
 
-不复制比赛数据，不改比赛代码。
+```text
+experiment config -> score feedback
+```
+
+变成：
+
+```text
+agent strategy -> capability score -> capsule solidification
+```
 
 ## EvoMap 技术栈接入
 

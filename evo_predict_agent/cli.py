@@ -13,6 +13,7 @@ from .predictor import AutoMLPredictor
 from .pre_evolver import build_pre_evolution_card
 from .signals import extract_signals, default_family_from_signals
 from .evomap_gep import gep_info, verify_asset
+from .capability import CapabilityEvaluator
 
 ROOT = Path.cwd()
 MEMORY_DIR = ROOT / "memory"
@@ -161,6 +162,36 @@ def cmd_demo(args):
 
 
 
+
+def cmd_capability_eval(args):
+    cmd_init(args) if not ASSETS_DIR.exists() else None
+    evaluator = CapabilityEvaluator(AssetStore(ASSETS_DIR))
+    report = evaluator.run_benchmark()
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({
+        "ok": True,
+        "out": str(out),
+        "baseline_avg": report["baseline_avg"],
+        "evolved_avg": report["evolved_avg"],
+        "absolute_improvement": report["absolute_improvement"],
+        "relative_improvement_pct": report["relative_improvement_pct"],
+        "asset_id": report["asset_id"],
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_capability_solidify(args):
+    evaluator = CapabilityEvaluator(AssetStore(ASSETS_DIR))
+    report_path = Path(args.report)
+    if report_path.exists():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    else:
+        report = evaluator.run_benchmark()
+    capsules = evaluator.solidify_improvements(report)
+    print(json.dumps({"ok": True, "capsules_created": len(capsules), "asset_ids": [c.get("asset_id") for c in capsules]}, ensure_ascii=False, indent=2))
+
+
 def cmd_gep_info(_args):
     print(json.dumps(gep_info(), ensure_ascii=False, indent=2))
 
@@ -218,6 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--summary", default="")
     sp.set_defaults(func=cmd_record_outcome)
     sp = sub.add_parser("status"); sp.set_defaults(func=cmd_status)
+    sp = sub.add_parser("capability-eval"); sp.add_argument("--out", default="memory/capability_report.json"); sp.set_defaults(func=cmd_capability_eval)
+    sp = sub.add_parser("capability-solidify"); sp.add_argument("--report", default="memory/capability_report.json"); sp.set_defaults(func=cmd_capability_solidify)
     sp = sub.add_parser("gep-info"); sp.set_defaults(func=cmd_gep_info)
     sp = sub.add_parser("export-gep"); sp.add_argument("--out", default="memory/gep_bundle.local.json"); sp.set_defaults(func=cmd_export_gep)
     sp = sub.add_parser("verify-assets"); sp.set_defaults(func=cmd_verify_assets)
