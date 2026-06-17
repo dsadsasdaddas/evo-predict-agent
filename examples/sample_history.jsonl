@@ -1,0 +1,2 @@
+{"question":"登录 callback 后 401","context":"auth callback cookie missing","signals":["auth"],"family":"auth-bug","outcome":"success","summary":"Fixed cookie boundary"}
+{"question":"Next build TS2345","context":"payload type mismatch","signals":["typescript-error","build-fail"],"family":"typescript-bug","outcome":"success","summary":"Fixed API payload typing"}
