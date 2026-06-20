@@ -12,6 +12,7 @@
     "@evomate/core": "0.1.0",
     "@hono/node-server": "^1.14.0",
     "hono": "^4.7.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "@evomate/hooks": "0.1.0"
   }
 }

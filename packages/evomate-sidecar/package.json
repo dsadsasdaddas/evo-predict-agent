@@ -7,13 +7,17 @@
     "evomate-observe": "./src/observe.ts",
     "evomate-advisor": "./src/advisor.ts",
     "evomate-outcome": "./src/outcome.ts",
-    "evomate-status": "./src/status.ts"
+    "evomate-status": "./src/status.ts",
+    "evomate-train": "./src/train.ts",
+    "evomate-history": "./src/history.ts"
   },
   "scripts": {
     "observe": "tsx src/observe.ts",
     "advisor": "tsx src/advisor.ts",
     "outcome": "tsx src/outcome.ts",
     "check": "tsc -p tsconfig.json --noEmit",
-    "status": "tsx src/status.ts"
+    "status": "tsx src/status.ts",
+    "train": "tsx src/train.ts",
+    "history": "tsx src/history.ts"
   }
 }

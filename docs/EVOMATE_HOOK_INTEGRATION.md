@@ -75,6 +75,17 @@ Outcome:
 }
 ```
 
+
+## Omni Hook Protocol
+
+Codex / Claude Code hooks are now one adapter inside a broader protocol layer. Mobile chat, web chat, browser extensions, and custom SDK clients should send `evomate.hook.v1` compatible events to:
+
+```text
+POST /api/hook-events
+```
+
+The API normalizes each event, chooses a route (`advisor`, `observe`, `outcome`, `ignore`), then reuses the same semantic parser, Gene Tournament, advisor injection, reward learning, and GEP asset path. Full contract: `docs/EVOMATE_HOOK_PROTOCOL.md`.
+
 ## Three operating modes
 
 1. **Observer mode** — safest demo mode. EvoMate only sees events and updates the control plane.

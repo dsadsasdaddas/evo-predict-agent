@@ -16,6 +16,13 @@ import {
 } from './remote-jobs.js';
 import { enhanceDecisionWithTrainedModels } from './trained-models.js';
 import {
+  EVOMATE_HOOK_PROTOCOL_VERSION,
+  normalizeHookInput,
+  toAgentObservePayload,
+  toAgentOutcomePayload,
+  type NormalizedEvoMateHookEvent
+} from '@evomate/hooks';
+import {
   applyFeedback,
   createInitialEvolutionState,
   EVOMATE_TECH_STACK,
@@ -25,17 +32,19 @@ import {
   selectBehaviorGeneDecision,
   type EvolutionState,
   type FeedbackInput,
+  type RemoteEvolutionJob,
   type RemoteJobType,
   type UserInputSignal
 } from '@evomate/core';
 
 loadLocalEnv();
 
-const PORT = Number(process.env.EVOMATE_API_PORT || 8787);
+const PORT = Number(process.env.EVOMATE_API_PORT || process.env.PORT || 8787);
 const STATE_DIR = process.env.EVOMATE_STATE_DIR
   ? resolveFromProjectRoot(process.env.EVOMATE_STATE_DIR)
   : resolveFromProjectRoot('memory/evomate');
 const STATE_FILE = resolve(STATE_DIR, 'evolution-state.json');
+const TRAIN_COOLDOWN_MS = Number(process.env.EVOMATE_TRAIN_COOLDOWN_MS || 15_000);
 
 const app = new Hono();
 app.use('*', cors());
@@ -85,6 +94,14 @@ const remoteJobSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional()
 });
 
+const historyQuerySchema = z.object({
+  q: z.string().optional(),
+  type: z.string().optional(),
+  geneId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  jobs: z.coerce.boolean().default(false)
+});
+
 app.get('/health', (c) => c.json({
   ok: true,
   service: 'evomate-api',
@@ -97,6 +114,100 @@ app.get('/api/tech-stack', (c) => c.json(EVOMATE_TECH_STACK));
 app.get('/api/evolution/state', async (c) => {
   const state = await loadState();
   return c.json(state);
+});
+
+app.get('/api/evolution/history', async (c) => {
+  const parsed = historyQuerySchema.safeParse(c.req.query());
+  if (!parsed.success) return c.json({ error: 'invalid_history_query', details: parsed.error.flatten() }, 400);
+
+  const state = await loadState();
+  const query = parsed.data.q?.trim().toLowerCase();
+  const type = parsed.data.type?.trim();
+  const geneId = parsed.data.geneId?.trim();
+  const timeline = state.timeline
+    .filter((item) => !type || item.type === type)
+    .filter((item) => !geneId || item.geneId === geneId)
+    .filter((item) => {
+      if (!query) return true;
+      return [
+        item.type,
+        item.summary,
+        item.geneId,
+        ...(item.signals ?? [])
+      ].filter(Boolean).join(' ').toLowerCase().includes(query);
+    })
+    .slice(0, parsed.data.limit)
+    .map((item) => ({
+      id: item.id,
+      type: item.type,
+      summary: item.summary,
+      score: item.score,
+      geneId: item.geneId,
+      signals: item.signals,
+      createdAt: item.createdAt
+    }));
+  const jobs = parsed.data.jobs
+    ? (await listRemoteEvolutionJobs()).slice(0, parsed.data.limit).map(compactRemoteJobSummary)
+    : undefined;
+
+  return c.json({
+    ok: true,
+    query: {
+      q: parsed.data.q,
+      type,
+      geneId,
+      limit: parsed.data.limit,
+      jobs: parsed.data.jobs
+    },
+    totalTimeline: state.timeline.length,
+    count: timeline.length,
+    timeline,
+    jobs
+  });
+});
+
+app.post('/api/evolution/train', async (c) => {
+  const parsed = remoteJobSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'invalid_train_request', details: parsed.error.flatten() }, 400);
+
+  const state = await loadState();
+  const jobType = parsed.data.type as RemoteJobType;
+  const existingJob = await findReusableTrainJob(jobType, Boolean(parsed.data.executeRemote));
+  if (existingJob) {
+    return c.json({
+      ok: true,
+      action: 'train_reused',
+      job: compactRemoteJob(existingJob),
+      mode: 'reused',
+      reused: true,
+      stateSummary: compactStateSummary(state)
+    });
+  }
+
+  const result = await submitRemoteEvolutionJob({
+    ...parsed.data,
+    type: jobType,
+    source: parsed.data.source === 'control_plane' ? 'slash_train' : parsed.data.source,
+    objective: parsed.data.objective || defaultTrainingObjective(jobType)
+  }, state);
+  const nextState = prependTimeline(state, [runtimeTimelineEvent({
+    type: 'remote_job_queued',
+    summary: `/train queued ${result.job.type} as ${result.job.jobId} in ${result.mode}`,
+    score: 0.62,
+    signals: ['remote_compute', 'background_training', result.job.type]
+  })], 'reflect');
+  await saveState(nextState);
+
+  return c.json({
+    ok: true,
+    action: 'train_queued',
+    job: compactRemoteJob(result.job),
+    datasetPath: result.datasetPath,
+    manifestPath: result.manifestPath,
+    mode: result.mode,
+    commandLog: result.commandLog,
+    stateSummary: compactStateSummary(nextState)
+  });
 });
 
 app.get('/api/remote-jobs', async (c) => {
@@ -231,59 +342,149 @@ app.post('/api/advisor/prepare', async (c) => {
   });
 });
 
+app.post('/api/hook-events', async (c) => {
+  const normalized = normalizeHookInput(await c.req.json().catch(() => ({})));
+  if (!normalized.ok) {
+    return c.json({
+      error: 'invalid_hook_event',
+      protocolVersion: EVOMATE_HOOK_PROTOCOL_VERSION,
+      details: normalized.errors
+    }, 400);
+  }
+
+  const results: Array<Record<string, unknown>> = [];
+  let latestState: EvolutionState | undefined;
+
+  for (const hookEvent of normalized.events) {
+    const dispatch = await dispatchHookEvent(hookEvent);
+    if (dispatch.state) latestState = dispatch.state;
+    results.push({
+      route: hookEvent.route,
+      event: compactHookEvent(hookEvent),
+      result: compactDispatchBody(dispatch.body)
+    });
+  }
+
+  return c.json({
+    ok: true,
+    protocolVersion: EVOMATE_HOOK_PROTOCOL_VERSION,
+    mode: 'omni_hook_protocol',
+    count: results.length,
+    results,
+    state: latestState
+  });
+});
+
 app.post('/api/agent-events/observe', async (c) => {
   const parsed = agentEventSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'invalid_agent_event', details: parsed.error.flatten() }, 400);
 
-  const event = normalizeAgentEvent(parsed.data);
-  const input = extractAgentEventContent(event);
-  if (!input.trim()) {
-    return c.json({
-      ok: true,
-      observed: false,
-      reason: 'empty_content',
-      mode: 'non_blocking_sidecar'
-    }, 202);
-  }
-
-  const state = await loadState();
-  const advisor = await prepareAdvisor(input, state, event);
-  const nextState = prependTimeline(state, buildAdvisorTrace(input, event, advisor), 'strategy_decision');
-  await saveState(nextState);
-
-  return c.json({
-    ok: true,
-    observed: true,
-    mode: 'non_blocking_sidecar',
-    source: event.source,
-    event: event.event,
-    workspace: event.workspace,
-    sessionId: event.sessionId,
-    advisorPrompt: advisor.advisorPrompt,
-    semantic: advisor.signal.semantic,
-    signal: advisor.signal,
-    signalExtraction: advisor.signalExtraction,
-    gene: advisor.gene,
-    policyDecision: advisor.policyDecision,
-    trainedModelInsight: advisor.trainedModelInsight,
-    predictedSatisfaction: advisor.predictedSatisfaction,
-    state: nextState
-  });
+  const result = await processAdvisorEvent(parsed.data, 'non_blocking_sidecar');
+  if (result.status === 202) return c.json(result.body, 202);
+  return c.json(result.body);
 });
 
 app.post('/api/agent-events/outcome', async (c) => {
   const parsed = outcomeSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'invalid_agent_outcome', details: parsed.error.flatten() }, 400);
 
-  const event = normalizeAgentEvent(parsed.data);
+  const result = await processOutcomeEvent(parsed.data, 'non_blocking_sidecar');
+  return c.json(result.body);
+});
+
+app.get('/api/events', async (c) => {
+  const state = await loadState();
+  c.header('Content-Type', 'text/event-stream');
+  c.header('Cache-Control', 'no-cache');
+  return c.body(`event: state\ndata: ${JSON.stringify(state)}\n\n`);
+});
+
+interface DispatchResult {
+  status: 200 | 202;
+  body: Record<string, unknown>;
+  state?: EvolutionState;
+}
+
+async function dispatchHookEvent(hookEvent: NormalizedEvoMateHookEvent): Promise<DispatchResult> {
+  if (hookEvent.route === 'advisor') {
+    return processAdvisorEvent(toAgentObservePayload(hookEvent), 'omni_hook_protocol');
+  }
+  if (hookEvent.route === 'outcome') {
+    return processOutcomeEvent(toAgentOutcomePayload(hookEvent), 'omni_hook_protocol');
+  }
+  if (hookEvent.route === 'observe') {
+    return processObserveOnlyHookEvent(hookEvent);
+  }
+
+  return {
+    status: 202,
+    body: {
+      ok: true,
+      observed: false,
+      reason: 'ignored_hook_event',
+      mode: 'omni_hook_protocol',
+      source: hookEvent.source,
+      event: hookEvent.event,
+      channel: hookEvent.channel,
+      eventKind: hookEvent.eventKind
+    }
+  };
+}
+
+async function processAdvisorEvent(rawEvent: AgentEventInput, mode: string): Promise<DispatchResult> {
+  const event = normalizeAgentEvent(rawEvent);
+  const content = extractAgentEventContent(event);
+  if (!content.trim()) {
+    return {
+      status: 202,
+      body: {
+        ok: true,
+        observed: false,
+        reason: 'empty_content',
+        mode
+      }
+    };
+  }
+
+  const state = await loadState();
+  const advisor = await prepareAdvisor(content, state, event);
+  const nextState = prependTimeline(state, buildAdvisorTrace(content, event, advisor), 'strategy_decision');
+  await saveState(nextState);
+
+  return {
+    status: 200,
+    state: nextState,
+    body: {
+      ok: true,
+      observed: true,
+      mode,
+      source: event.source,
+      event: event.event,
+      workspace: event.workspace,
+      sessionId: event.sessionId,
+      advisorPrompt: advisor.advisorPrompt,
+      semantic: advisor.signal.semantic,
+      signal: advisor.signal,
+      signalExtraction: advisor.signalExtraction,
+      gene: advisor.gene,
+      policyDecision: advisor.policyDecision,
+      trainedModelInsight: advisor.trainedModelInsight,
+      predictedSatisfaction: advisor.predictedSatisfaction,
+      state: nextState
+    }
+  };
+}
+
+async function processOutcomeEvent(input: OutcomeInput, mode: string): Promise<DispatchResult> {
+  const event = normalizeAgentEvent(input);
   const content = extractAgentEventContent(event);
   const inferred = content.trim() ? extractSignals(content) : undefined;
   const feedback: FeedbackInput = {
-    kind: inferFeedbackKind(parsed.data),
+    kind: inferFeedbackKind(input),
     text: content || `${event.source}:${event.event}`,
-    score: parsed.data.score,
-    geneId: parsed.data.geneId,
-    signals: parsed.data.signals?.length ? parsed.data.signals : inferred?.signals
+    score: input.score,
+    geneId: input.geneId,
+    signals: input.signals?.length ? input.signals : inferred?.signals
   };
 
   const state = await loadState();
@@ -305,26 +506,103 @@ app.post('/api/agent-events/outcome', async (c) => {
   })], 'record_outcome');
   await saveState(nextState);
 
-  return c.json({
-    ok: true,
-    mode: 'non_blocking_sidecar',
-    source: event.source,
-    event: event.event,
-    workspace: event.workspace,
-    sessionId: event.sessionId,
-    feedback,
-    reward: rewardPreview,
-    gepAssets,
-    state: nextState
-  });
-});
+  return {
+    status: 200,
+    state: nextState,
+    body: {
+      ok: true,
+      mode,
+      source: event.source,
+      event: event.event,
+      workspace: event.workspace,
+      sessionId: event.sessionId,
+      feedback,
+      reward: rewardPreview,
+      gepAssets,
+      state: nextState
+    }
+  };
+}
 
-app.get('/api/events', async (c) => {
+async function processObserveOnlyHookEvent(hookEvent: NormalizedEvoMateHookEvent): Promise<DispatchResult> {
   const state = await loadState();
-  c.header('Content-Type', 'text/event-stream');
-  c.header('Cache-Control', 'no-cache');
-  return c.body(`event: state\ndata: ${JSON.stringify(state)}\n\n`);
-});
+  const channelSignal = `channel_${hookEvent.channel.replace(/[^a-z0-9]+/g, '_')}`;
+  const kindSignal = `hook_${hookEvent.eventKind.replace(/[^a-z0-9]+/g, '_')}`;
+  const nextState = prependTimeline(state, [runtimeTimelineEvent({
+    type: 'omni_hook_received',
+    summary: `${hookEvent.channel}:${hookEvent.eventKind} observed from ${hookEvent.source}`,
+    score: hookEvent.content?.trim() ? 0.52 : 0.42,
+    signals: ['omni_hook', channelSignal, kindSignal]
+  })], 'user_input_received');
+  await saveState(nextState);
+
+  return {
+    status: 200,
+    state: nextState,
+    body: {
+      ok: true,
+      observed: true,
+      mode: 'omni_hook_protocol',
+      source: hookEvent.source,
+      event: hookEvent.event,
+      channel: hookEvent.channel,
+      eventKind: hookEvent.eventKind,
+      route: hookEvent.route,
+      state: nextState
+    }
+  };
+}
+
+function compactHookEvent(event: NormalizedEvoMateHookEvent): Record<string, unknown> {
+  return {
+    protocolVersion: event.protocolVersion,
+    source: event.source,
+    channel: event.channel,
+    event: event.event,
+    eventKind: event.eventKind,
+    direction: event.direction,
+    route: event.route,
+    sessionId: event.sessionId,
+    workspace: event.workspace,
+    url: event.url,
+    device: event.device,
+    contentLength: event.content?.length ?? 0,
+    signals: event.signals
+  };
+}
+
+function compactDispatchBody(body: Record<string, unknown>): Record<string, unknown> {
+  const semantic = isRecord(body.semantic) ? body.semantic : undefined;
+  const gene = isRecord(body.gene) ? body.gene : undefined;
+  const reward = isRecord(body.reward) ? body.reward : undefined;
+  const gepAssets = isRecord(body.gepAssets) ? body.gepAssets : undefined;
+  return {
+    ok: body.ok,
+    observed: body.observed,
+    mode: body.mode,
+    source: body.source,
+    event: body.event,
+    workspace: body.workspace,
+    sessionId: body.sessionId,
+    gene: gene ? { id: gene.id, label: gene.label } : undefined,
+    predictedSatisfaction: body.predictedSatisfaction,
+    semantic: semantic ? {
+      taskType: semantic.taskType,
+      intent: semantic.intent,
+      riskLevel: semantic.riskLevel,
+      permissionMode: semantic.permissionMode,
+      confidence: semantic.confidence,
+      signals: semantic.signals
+    } : undefined,
+    feedback: body.feedback,
+    reward: reward ? { reward: reward.reward, yesness: reward.yesness, kind: reward.kind } : undefined,
+    gepAssets: gepAssets ? { written: gepAssets.written } : undefined
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
 async function loadState(): Promise<EvolutionState> {
   try {
@@ -381,6 +659,98 @@ function prependTimeline(state: EvolutionState, events: Array<EvolutionState['ti
   };
 }
 
+async function findReusableTrainJob(type: RemoteJobType, executeRemote: boolean): Promise<RemoteEvolutionJob | undefined> {
+  if (!TRAIN_COOLDOWN_MS || TRAIN_COOLDOWN_MS < 1) return undefined;
+  const now = Date.now();
+  const jobs = await listRemoteEvolutionJobs();
+  return jobs.find((job) => (
+    job.type === type
+    && job.target?.executeRemote === executeRemote
+    && ['queued', 'syncing', 'running'].includes(job.status)
+    && now - Date.parse(job.createdAt) <= TRAIN_COOLDOWN_MS
+  ));
+}
+
+function compactRemoteJob(job: RemoteEvolutionJob): Record<string, unknown> {
+  return {
+    jobId: job.jobId,
+    type: job.type,
+    status: job.status,
+    objective: job.objective,
+    source: job.source,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    datasetPath: job.datasetPath,
+    artifactPath: job.artifactPath,
+    error: job.error,
+    target: job.target ? {
+      host: job.target.host,
+      port: job.target.port,
+      user: job.target.user,
+      rootDir: job.target.rootDir,
+      executeRemote: job.target.executeRemote
+    } : undefined,
+    pipeline: job.pipeline,
+    artifactSummary: job.artifactSummary
+  };
+}
+
+function compactRemoteJobSummary(job: RemoteEvolutionJob): Record<string, unknown> {
+  return {
+    jobId: job.jobId,
+    type: job.type,
+    status: job.status,
+    source: job.source,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    mode: job.target?.executeRemote ? 'ssh' : 'dry_run',
+    artifactSummary: job.artifactSummary ? {
+      validationScore: job.artifactSummary.validationScore,
+      suggestedMutationCount: job.artifactSummary.suggestedMutationCount,
+      evolutionBundleId: job.artifactSummary.evolutionBundleId
+    } : undefined
+  };
+}
+
+function compactStateSummary(state: EvolutionState): Record<string, unknown> {
+  return {
+    assistantId: state.assistantId,
+    generation: state.generation,
+    phase: state.phase,
+    understandingScore: state.understandingScore,
+    metrics: state.metrics,
+    latestTimeline: state.timeline.slice(0, 5).map((item) => ({
+      id: item.id,
+      type: item.type,
+      summary: item.summary,
+      score: item.score,
+      geneId: item.geneId,
+      signals: item.signals,
+      createdAt: item.createdAt
+    })),
+    activeGenes: state.activeGenes.slice(0, 8).map((gene) => ({
+      id: gene.id,
+      label: gene.label,
+      weight: gene.weight,
+      fitness: gene.fitness
+    }))
+  };
+}
+
+function defaultTrainingObjective(type: RemoteJobType): string {
+  switch (type) {
+    case 'preference_train':
+      return 'Train reward/preference model from recent EvoMate outcomes and canonical Yes Engineer samples.';
+    case 'embedding_build':
+      return 'Build memory retrieval index from EvoMate timeline, feedback, and GEP-compatible evolution assets.';
+    case 'policy_replay_eval':
+      return 'Replay recent policy decisions and score behavior gene choices against recorded outcomes.';
+    case 'evolution_gym_eval':
+    default:
+      return 'Run EvoMate evolution gym evaluation over behavior genes, policy, reward, and memory signals.';
+  }
+}
+
 function buildAdvisorTrace(input: string, context: AdvisorContext, advisor: Awaited<ReturnType<typeof prepareAdvisor>>): Array<EvolutionState['timeline'][number]> {
   const source = normalizeHookText(context.source, 'manual');
   const event = normalizeHookText(context.event, 'advisor_prepare');
@@ -411,11 +781,18 @@ function buildAdvisorTrace(input: string, context: AdvisorContext, advisor: Awai
     }),
     runtimeTimelineEvent({
       type: 'hook_received',
-      summary: `${source}:${event} captured ${input.trim().length} chars from agent/user turn`,
+      summary: `${source}:${event} · "${compactTimelineExcerpt(input)}" · ${input.trim().length} chars`,
       score: 0.5,
       signals
     })
   ];
+}
+
+function compactTimelineExcerpt(input: string): string {
+  const normalized = input.replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'empty turn';
+  const limit = 72;
+  return normalized.length > limit ? `${normalized.slice(0, limit)}…` : normalized;
 }
 
 function clampScore(value: number): number {

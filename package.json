@@ -20,7 +20,9 @@
     "check": "npm run gep:schema-validate && npm run evomate:check && npm run test:python",
     "evomate:desktop": "npm run dev -w apps/desktop",
     "evomate:desktop:check": "npm run check -w apps/desktop",
-    "evomate:status": "npm --silent run status -w packages/evomate-sidecar --"
+    "evomate:status": "npm --silent run status -w packages/evomate-sidecar --",
+    "evomate:train": "npm --silent run train -w packages/evomate-sidecar --",
+    "evomate:history": "npm --silent run history -w packages/evomate-sidecar --"
   },
   "dependencies": {
     "@evomap/gep-sdk": "latest",

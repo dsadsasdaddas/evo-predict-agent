@@ -1,7 +1,9 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 export type HookKind = 'observe' | 'advisor' | 'outcome';
+const MAX_HOOK_STRING_CHARS = Number(process.env.EVOMATE_HOOK_MAX_STRING_CHARS || 1200);
+const MAX_HOOK_QUEUE_BYTES = Number(process.env.EVOMATE_HOOK_QUEUE_MAX_BYTES || 5 * 1024 * 1024);
 
 export interface HookPayload {
   source: string;
@@ -119,12 +121,13 @@ export async function appendQueue(kind: HookKind, payload: unknown): Promise<str
   const queueDir = resolveProjectPath(process.env.EVOMATE_HOOK_QUEUE_DIR || 'memory/evomate/hooks');
   const queuePath = resolve(queueDir, `${kind}.jsonl`);
   await mkdir(dirname(queuePath), { recursive: true });
+  await rotateQueueIfNeeded(queuePath);
   await appendFile(queuePath, `${JSON.stringify({ createdAt: new Date().toISOString(), payload })}\n`, 'utf8');
   return queuePath;
 }
 
 export async function postJson<T extends HookResponse>(path: string, payload: unknown): Promise<T> {
-  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://localhost:8787');
+  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://127.0.0.1:8787');
   const timeoutMs = Number(process.env.EVOMATE_HOOK_TIMEOUT_MS || 900);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -148,7 +151,7 @@ export async function postJson<T extends HookResponse>(path: string, payload: un
 }
 
 export async function getJson<T = unknown>(path: string, timeoutMs = Number(process.env.EVOMATE_HOOK_TIMEOUT_MS || 900)): Promise<T> {
-  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://localhost:8787');
+  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://127.0.0.1:8787');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -222,10 +225,17 @@ function redactValue(value: unknown, depth = 0): unknown {
 }
 
 function redactString(value: string): string {
-  return value
+  const redacted = value
     .replace(/Bearer\s+[A-Za-z0-9._=-]{12,}/gi, 'Bearer [redacted]')
     .replace(/sk-(?:evomap-)?[A-Za-z0-9_-]{16,}/g, 'sk-[redacted]')
     .replace(/((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^"'\s,}]{6,}/gi, '$1[redacted]');
+  return truncateString(redacted, MAX_HOOK_STRING_CHARS);
+}
+
+function truncateString(value: string, maxChars: number): string {
+  if (!Number.isFinite(maxChars) || maxChars < 1) return value;
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}…[truncated ${value.length - maxChars} chars]`;
 }
 
 function defaultEvent(kind: HookKind): string {
@@ -277,4 +287,15 @@ function resolveProjectPath(path: string): string {
 
 function trimSlash(value: string): string {
   return value.replace(/\/$/, '');
+}
+
+async function rotateQueueIfNeeded(queuePath: string): Promise<void> {
+  if (!Number.isFinite(MAX_HOOK_QUEUE_BYTES) || MAX_HOOK_QUEUE_BYTES < 1) return;
+  try {
+    const info = await stat(queuePath);
+    if (info.size < MAX_HOOK_QUEUE_BYTES) return;
+    await rename(queuePath, `${queuePath}.${Date.now()}.bak`);
+  } catch {
+    // Missing queue or rotation race: safe to append normally.
+  }
 }

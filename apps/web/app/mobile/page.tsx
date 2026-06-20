@@ -1,5 +1,5 @@
 import { MobileObserver } from '@/components/EvolutionConsole';
 
-export default function Page() {
+export default function MobilePage() {
   return <MobileObserver />;
 }

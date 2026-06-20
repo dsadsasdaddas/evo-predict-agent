@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EvoMate Web Hook</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">EvoMate</p>
+          <h1>Web Hook</h1>
+        </div>
+        <label class="switch" title="enable auto observe">
+          <input id="enabled" type="checkbox" />
+          <span></span>
+        </label>
+      </header>
+
+      <section class="card">
+        <label class="label" for="apiUrl">Hook API</label>
+        <input id="apiUrl" class="input" spellcheck="false" />
+        <p class="hint">默认指向 Cloud Run，也可以填本地 http://127.0.0.1:8787</p>
+      </section>
+
+      <section class="grid">
+        <label class="check"><input id="captureUser" type="checkbox" /> user</label>
+        <label class="check"><input id="captureAssistant" type="checkbox" /> assistant</label>
+        <label class="check"><input id="captureUnknown" type="checkbox" /> unknown</label>
+        <label class="check"><input id="clientRedaction" type="checkbox" /> redact</label>
+      </section>
+
+      <section class="actions">
+        <button id="captureSelection" class="primary">Capture selection</button>
+        <button id="scanNow" class="secondary">Scan current page</button>
+      </section>
+
+      <section class="status">
+        <div class="status-row"><span>Last</span><strong id="lastStatus">waiting</strong></div>
+        <div id="recent" class="recent"></div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
