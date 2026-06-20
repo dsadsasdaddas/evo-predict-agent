@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from evo_predict_agent.training import run_training_pipeline
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -73,50 +75,6 @@ def run_evolution_gym(job: dict[str, Any], dataset: dict[str, Any]) -> dict[str,
     return replay
 
 
-def run_preference_train(job: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
-    samples = dataset.get("samples") or []
-    accepted = sum(1 for item in samples if float(item.get("score", 0.5) or 0.5) >= 0.7)
-    total = max(len(samples), 1)
-    win_rate = accepted / total
-    return {
-        "id": f"pref_{job['jobId']}",
-        "job_id": job["jobId"],
-        "job_type": job["type"],
-        "best_candidate": "linear_preference_reward_head_v1",
-        "baseline_avg": 0.5,
-        "evolved_avg": round(0.58 + 0.28 * win_rate, 4),
-        "absolute_improvement": round(0.08 + 0.28 * win_rate, 4),
-        "relative_improvement_pct": round((0.08 + 0.28 * win_rate) / 0.5 * 100, 2),
-        "training_examples": total,
-        "gpu_profile": "V100-compatible skeleton; plug PyTorch/Transformers here when dataset is large enough."
-    }
-
-
-def run_embedding_build(job: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
-    samples = dataset.get("samples") or []
-    dimension = 384
-    vectors = []
-    for i, sample in enumerate(samples[:64]):
-        seed = sum(ord(ch) for ch in json.dumps(sample, ensure_ascii=False))
-        norm = math.sqrt(sum(((seed + j * 17) % 97 / 97) ** 2 for j in range(8))) or 1
-        vectors.append({
-            "id": sample.get("id", f"sample_{i}"),
-            "preview_vector_8d": [round(((seed + j * 17) % 97 / 97) / norm, 4) for j in range(8)],
-            "target_dimension": dimension,
-        })
-    return {
-        "id": f"embed_{job['jobId']}",
-        "job_id": job["jobId"],
-        "job_type": job["type"],
-        "best_candidate": "interaction_embedding_memory_v1",
-        "baseline_avg": 0.52,
-        "evolved_avg": 0.74 if vectors else 0.58,
-        "absolute_improvement": 0.22 if vectors else 0.06,
-        "relative_improvement_pct": 42.31 if vectors else 11.54,
-        "vectors_preview": vectors,
-    }
-
-
 def build_mutations(job: dict[str, Any], eval_report: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -162,38 +120,62 @@ def main() -> None:
     try:
         time.sleep(0.1)
         job_type = job.get("type")
-        if job_type == "policy_replay_eval":
+        if job_type in {"preference_train", "embedding_build", "evolution_gym_eval"}:
+            training_result = run_training_pipeline(job, dataset, artifacts)
+            policy_eval = training_result["policy_eval"]
+            validation_report = training_result["validation_report"]
+            mutations = training_result["suggested_mutations"]
+            bundle = training_result["evolution_bundle"]
+        elif job_type == "policy_replay_eval":
             policy_eval = run_policy_replay(job, dataset)
-        elif job_type == "preference_train":
-            policy_eval = run_preference_train(job, dataset)
-        elif job_type == "embedding_build":
-            policy_eval = run_embedding_build(job, dataset)
+            validation_report = {
+                "type": "ValidationReport",
+                "id": f"val_{job['jobId']}",
+                "job_id": job["jobId"],
+                "score": policy_eval["evolved_avg"],
+                "passed": policy_eval["evolved_avg"] >= 0.68,
+                "evidence": ["remote_worker", job.get("type"), "portable_dataset", "policy_replay"],
+                "created_at": utc_now(),
+            }
+            mutations = build_mutations(job, policy_eval)
+            bundle = {
+                "type": "EvolutionBundle",
+                "id": f"bundle_{job['jobId']}",
+                "job_id": job["jobId"],
+                "source": "remote_compute_distribution",
+                "created_at": utc_now(),
+                "assets": {
+                    "policy_eval": policy_eval["id"],
+                    "validation_report": validation_report["id"],
+                    "mutations": [m["id"] for m in mutations],
+                    "capsule_candidate": f"capsule_{job['jobId']}_remote_learning",
+                },
+            }
         else:
             policy_eval = run_evolution_gym(job, dataset)
-
-        validation_report = {
-            "type": "ValidationReport",
-            "id": f"val_{job['jobId']}",
-            "job_id": job["jobId"],
-            "score": policy_eval["evolved_avg"],
-            "passed": policy_eval["evolved_avg"] >= 0.68,
-            "evidence": ["remote_worker", job.get("type"), "portable_dataset", "mutation_safety_gate"],
-            "created_at": utc_now(),
-        }
-        mutations = build_mutations(job, policy_eval)
-        bundle = {
-            "type": "EvolutionBundle",
-            "id": f"bundle_{job['jobId']}",
-            "job_id": job["jobId"],
-            "source": "remote_compute_distribution",
-            "created_at": utc_now(),
-            "assets": {
-                "policy_eval": policy_eval["id"],
-                "validation_report": validation_report["id"],
-                "mutations": [m["id"] for m in mutations],
-                "capsule_candidate": f"capsule_{job['jobId']}_remote_learning",
-            },
-        }
+            validation_report = {
+                "type": "ValidationReport",
+                "id": f"val_{job['jobId']}",
+                "job_id": job["jobId"],
+                "score": policy_eval["evolved_avg"],
+                "passed": policy_eval["evolved_avg"] >= 0.68,
+                "evidence": ["remote_worker", job.get("type"), "portable_dataset", "evolution_gym"],
+                "created_at": utc_now(),
+            }
+            mutations = build_mutations(job, policy_eval)
+            bundle = {
+                "type": "EvolutionBundle",
+                "id": f"bundle_{job['jobId']}",
+                "job_id": job["jobId"],
+                "source": "remote_compute_distribution",
+                "created_at": utc_now(),
+                "assets": {
+                    "policy_eval": policy_eval["id"],
+                    "validation_report": validation_report["id"],
+                    "mutations": [m["id"] for m in mutations],
+                    "capsule_candidate": f"capsule_{job['jobId']}_remote_learning",
+                },
+            }
 
         write_json(artifacts / "policy_eval.json", policy_eval)
         write_json(artifacts / "validation_report.json", validation_report)

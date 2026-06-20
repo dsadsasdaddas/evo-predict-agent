@@ -346,6 +346,8 @@ export type {
   SemanticTaskType,
   UserTone
 } from './semantic.js';
+export { normalizeExternalSemantic } from './semantic-schema.js';
+export type { SemanticNormalizationResult } from './semantic-schema.js';
 
 export {
   calculateFeedbackReward,

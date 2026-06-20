@@ -1,4 +1,5 @@
 export type SemanticTaskType = 'coding' | 'product' | 'research' | 'general';
+export const SEMANTIC_SCHEMA_VERSION = 'evomate.semantic.v1' as const;
 export type SemanticIntent =
   | 'analysis_before_execution'
   | 'direct_execution'
@@ -19,6 +20,7 @@ export interface FeedbackSemantics {
 }
 
 export interface SemanticParseResult {
+  schemaVersion: typeof SEMANTIC_SCHEMA_VERSION;
   rawInput: string;
   taskType: SemanticTaskType;
   intent: SemanticIntent;
@@ -173,6 +175,7 @@ export function parseSemantics(rawInput: string): SemanticParseResult {
   const confidence = scoreConfidence(signals.size, workstyleSignals.size, domainSignals.size, toolNeeds.size);
 
   return {
+    schemaVersion: SEMANTIC_SCHEMA_VERSION,
     rawInput,
     taskType,
     intent,

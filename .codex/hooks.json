@@ -21,6 +21,12 @@
             "command": "\"$(git rev-parse --show-toplevel)\"/.codex/hooks/evomate-codex-hook.sh observe user_prompt_submit",
             "timeout": 5,
             "statusMessage": "EvoMate observing Codex prompt"
+          },
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)\"/.codex/hooks/evomate-codex-inject.sh user_prompt_submit",
+            "timeout": 5,
+            "statusMessage": "EvoMate injecting behavior gene"
           }
         ]
       }

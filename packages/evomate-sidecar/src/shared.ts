@@ -147,6 +147,28 @@ export async function postJson<T extends HookResponse>(path: string, payload: un
   }
 }
 
+export async function getJson<T = unknown>(path: string, timeoutMs = Number(process.env.EVOMATE_HOOK_TIMEOUT_MS || 900)): Promise<T> {
+  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://localhost:8787');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'GET',
+      headers: { 'accept': 'application/json' },
+      signal: controller.signal
+    });
+    const text = await response.text();
+    const json = text ? JSON.parse(text) as T : {} as T;
+    if (!response.ok) {
+      const error = isRecord(json) && typeof json.error === 'string' ? json.error : response.statusText;
+      throw new Error(`evomate_api_${response.status}:${error}`);
+    }
+    return json;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function compactResponse(response: HookResponse, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ok: response.ok !== false,

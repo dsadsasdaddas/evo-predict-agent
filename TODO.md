@@ -143,7 +143,9 @@ Claude Code / Codex / Cursor
 - [ ] Add `evomate_select_workflow`
 - [ ] Add `evomate_compose_evolution_bundle`
 - [x] Add MCP / hook config examples for Claude Code / Codex / Cursor
-- [ ] Document host flow:
+- [x] Add `UserPromptSubmit` advisor auto-injection for Codex / Claude Code hooks
+- [x] Add CLI state panel for Codex users with hook/model/evolution status
+- [x] Document host flow:
 
 ```text
 Host receives user input
@@ -217,10 +219,13 @@ Tasks:
 
 - [x] Create remote compute distribution skeleton
 - [x] Add remote job API + MCP tools
-- [x] Add Python remote worker skeleton
+- [x] Add Python remote worker with real preference/policy/memory training pipeline
 - [x] Add deploy/remote bootstrap/sync/submit/import scripts
 - [x] Add frontend Remote Compute control panel
 - [x] Execute first real SSH remote job on GPU machine
+- [x] Poll `/api/evolution/state` from frontend / desktop shell for live hook timeline updates
+- [x] Install trained preference reward model, behavior policy model, and memory index into runtime advisor
+- [x] Replace plain score sorting with weighted Condorcet / Gene Tournament behavior selection
 
 ## Priority 7 — Roadshow Packaging
 
@@ -232,6 +237,18 @@ Tasks:
 - [ ] Before/after agent behavior story
 - [ ] Visual proof: feedback changes behavior gene
 - [ ] Visual proof: EvolutionBundle maps to EvoMap assets
+
+
+## Priority 8 — Desktop Roadshow Shell
+
+- [x] Add `apps/desktop` Electron shell
+- [x] Auto-start local API and web control plane
+- [x] Load EvoMate in a native desktop window
+- [x] Add desktop demo documentation
+- [x] Show live API / hook state in the desktop-loaded control plane
+- [ ] Add packaged `.app` build with electron-builder
+- [ ] Add one-click hook installer UI
+- [ ] Add mobile companion dashboard route
 
 ## Immediate Next Steps
 

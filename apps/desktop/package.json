@@ -1,0 +1,15 @@
+{
+  "name": "@evomate/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "description": "EvoMate desktop shell for local Codex / Claude Code hook demos.",
+  "scripts": {
+    "dev": "electron .",
+    "check": "node --check src/main.mjs && node scripts/validate.mjs"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}

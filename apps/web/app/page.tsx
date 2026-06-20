@@ -12,7 +12,6 @@ import {
   Copy,
   Cpu,
   Dna,
-  Gauge,
   GitBranch,
   Layers3,
   Network,
@@ -20,16 +19,17 @@ import {
   RadioTower,
   RefreshCcw,
   ShieldCheck,
-  Sparkles,
   TerminalSquare,
   ThumbsDown,
   ThumbsUp,
   Zap
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 type SourceMode = 'api' | 'demo';
+
+type ShellMode = 'web' | 'electron' | 'codex';
 
 type AnalyzeResult = {
   geneId: string;
@@ -94,6 +94,37 @@ type GepAsset = {
 
 type GeneTuple = [label: string, id: string, score: number, body: string, mode: string, inject: string];
 
+type LiveStatus = 'connecting' | 'live' | 'offline';
+
+type FlowStage = {
+  icon: ReactNode;
+  label: string;
+  title: string;
+  detail: string;
+  tone: 'cyan' | 'mint' | 'red';
+};
+
+type EvolutionTimelineItem = {
+  id: string;
+  type: string;
+  summary: string;
+  score: number;
+  createdAt: string;
+  geneId?: string;
+  signals?: string[];
+};
+
+type EvolutionState = {
+  generation?: number;
+  phase?: string;
+  understandingScore?: number;
+  metrics?: {
+    yesnessScore?: number;
+    averageReward?: number;
+  };
+  timeline?: EvolutionTimelineItem[];
+};
+
 const API_URL = process.env.NEXT_PUBLIC_EVOMATE_API_URL || 'http://localhost:8787';
 const starterEvent = 'Codex session: 用户让我看这个仓库，强调“先别乱动代码”，目标是接入 EvoMap/GEP 和机器学习。';
 
@@ -148,14 +179,62 @@ export default function Page() {
   const [remoteJob, setRemoteJob] = useState<RemoteJob | null>(null);
   const [remoteJobs, setRemoteJobs] = useState<RemoteJob[]>([]);
   const [remoteLoading, setRemoteLoading] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('connecting');
+  const [lastLiveEventAt, setLastLiveEventAt] = useState<string | null>(null);
+  const [shellMode, setShellMode] = useState<ShellMode>('web');
   const [timeline, setTimeline] = useState([
     'Codex session observed: user requested read-only repo analysis.',
     'Policy selected Safe Yes before agent execution.',
     'Next feedback will write Mutation + EvolutionEvent into GEP.'
   ]);
+  const lastStateStamp = useRef('');
 
   const activeGene = useMemo(() => genes.find((gene) => gene[1] === result.geneId) ?? genes[0], [result.geneId]);
   const delta = result.yesness - result.previousYesness;
+  const flowPulseKey = lastLiveEventAt ?? timeline[0] ?? result.geneId;
+  const isCodexShell = shellMode === 'codex';
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shell = params.get('shell');
+    setShellMode(shell === 'electron' || shell === 'codex' ? shell : 'web');
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollEvolutionState() {
+      try {
+        const res = await fetch(`${API_URL}/api/evolution/state`, { cache: 'no-store' });
+        if (!res.ok) throw new Error('state api unavailable');
+        const state = await res.json() as EvolutionState;
+        if (cancelled) return;
+
+        setLiveStatus('live');
+        const latest = state.timeline?.[0];
+        const stamp = [
+          state.generation ?? 'gen',
+          latest?.id ?? 'no-event',
+          state.metrics?.yesnessScore ?? 'no-score',
+          state.phase ?? 'phase'
+        ].join(':');
+
+        if (stamp !== lastStateStamp.current) {
+          lastStateStamp.current = stamp;
+          applyLiveEvolutionState(state);
+        }
+      } catch {
+        if (!cancelled) setLiveStatus('offline');
+      }
+    }
+
+    pollEvolutionState();
+    const timer = window.setInterval(pollEvolutionState, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   async function observeEvent() {
     setLoading(true);
@@ -324,49 +403,146 @@ export default function Page() {
     setTimeline((current) => [text, ...current].slice(0, 6));
   }
 
+  function applyLiveEvolutionState(state: EvolutionState) {
+    const timelineItems = state.timeline ?? [];
+    const latest = timelineItems[0];
+    const latestGeneEvent = timelineItems.find((item) => item.geneId);
+    const liveTimeline = formatLiveTimeline(timelineItems);
+
+    if (liveTimeline.length) setTimeline(liveTimeline);
+    if (latest?.createdAt) setLastLiveEventAt(latest.createdAt);
+
+    setResult((current) => {
+      const signals = latestGeneEvent?.signals?.length ? latestGeneEvent.signals : current.signals;
+      const taskType = inferTaskType(signals, current.taskType);
+      const riskLevel = inferRiskLevel(signals, current.riskLevel);
+      const nextYesness = typeof latestGeneEvent?.score === 'number'
+        ? clamp(latestGeneEvent.score, 0.02, 0.98)
+        : typeof state.metrics?.yesnessScore === 'number'
+          ? clamp(state.metrics.yesnessScore, 0.02, 0.98)
+          : current.yesness;
+
+      return {
+        ...current,
+        geneId: latestGeneEvent?.geneId ?? current.geneId,
+        previousYesness: current.yesness,
+        yesness: nextYesness,
+        signals,
+        taskType,
+        riskLevel,
+        source: 'api',
+        semantic: {
+          ...current.semantic,
+          taskType,
+          riskLevel,
+          signals,
+          intent: inferIntentFromTimeline(latest, current.semantic.intent)
+        }
+      };
+    });
+  }
+
   async function copyEvent() {
     await navigator.clipboard.writeText(eventText);
     setCopied(true);
     setTimeout(() => setCopied(false), 1000);
   }
 
+  const heroProps = {
+    result,
+    activeGene,
+    assets,
+    reward,
+    delta,
+    timeline,
+    liveStatus,
+    lastLiveEventAt,
+    flowPulseKey
+  };
+
+  if (isCodexShell) {
+    return (
+      <main className="min-h-screen overflow-hidden bg-black text-white">
+        <SubtleBackground />
+        <TopRail source={result.source} liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} shellMode={shellMode} />
+
+        <section className="relative z-10 mx-auto max-w-[860px] px-4 pb-8 pt-4">
+          <CodexReviewHeader liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} />
+          <div className="mt-4 flex min-w-0 flex-col gap-4">
+            <EvoMapProofHero {...heroProps} />
+            <LiveProofDock {...heroProps} />
+            <RuntimePipeline result={result} activeGene={activeGene} assets={assets} />
+            <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+              <AgentSessionCard
+                eventText={eventText}
+                setEventText={setEventText}
+                copied={copied}
+                copyEvent={copyEvent}
+                loading={loading}
+                observeEvent={observeEvent}
+                recordFeedback={recordFeedback}
+              />
+              <TimelinePanel timeline={timeline} liveStatus={liveStatus} />
+            </div>
+            <div className="grid min-w-0 gap-4 md:grid-cols-2">
+              <GepAssetStream assets={assets} reward={reward} />
+              <BehaviorControlPanel activeGeneId={result.geneId} />
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen overflow-hidden bg-black text-white">
       <SubtleBackground />
-      <TopRail source={result.source} />
+      <TopRail source={result.source} liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} shellMode={shellMode} />
 
-      <section className="relative z-10 mx-auto max-w-[1480px] px-5 pb-8 pt-5 lg:px-8">
-        <div className="grid min-h-[calc(100vh-92px)] min-w-0 gap-4 sm:gap-5 xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)_360px]">
-          <aside className="flex min-w-0 flex-col gap-5">
-            <ControlPlaneCard yesness={result.yesness} delta={delta} />
-            <AgentSessionCard
-              eventText={eventText}
-              setEventText={setEventText}
-              copied={copied}
-              copyEvent={copyEvent}
-              loading={loading}
-              observeEvent={observeEvent}
-              recordFeedback={recordFeedback}
+      <section className="relative z-10 mx-auto max-w-[1480px] px-4 pb-5 pt-4 lg:px-5">
+        <div className="grid min-h-[calc(100vh-88px)] min-w-0 gap-4 lg:grid-cols-[244px_minmax(0,1fr)] xl:grid-cols-[244px_minmax(0,1fr)_360px]">
+          <ElectronSideNav
+            result={result}
+            activeGene={activeGene}
+            liveStatus={liveStatus}
+            lastLiveEventAt={lastLiveEventAt}
+          />
+
+          <main className="flex min-w-0 flex-col gap-4">
+            <EvoMapProofHero
+              {...heroProps}
             />
-          </aside>
-
-          <main className="flex min-w-0 flex-col gap-5">
-            <HeroPanel result={result} activeGene={activeGene} reward={reward} delta={delta} />
             <RuntimePipeline result={result} activeGene={activeGene} assets={assets} />
+            <div className="grid min-w-0 gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
+              <AgentSessionCard
+                eventText={eventText}
+                setEventText={setEventText}
+                copied={copied}
+                copyEvent={copyEvent}
+                loading={loading}
+                observeEvent={observeEvent}
+                recordFeedback={recordFeedback}
+              />
+              <TimelinePanel timeline={timeline} liveStatus={liveStatus} />
+            </div>
           </main>
 
-          <aside className="flex min-w-0 flex-col gap-5 xl:col-span-2 2xl:col-span-1">
-            <BehaviorControlPanel activeGeneId={result.geneId} />
-            <GepAssetStream assets={assets} reward={reward} />
-            <RemoteComputePanel
-              job={remoteJob}
-              jobs={remoteJobs}
-              loading={remoteLoading}
-              onSubmit={submitRemoteJob}
-              onImport={importRemoteArtifacts}
-              onRefresh={refreshRemoteJobs}
+          <aside className="flex min-w-0 flex-col gap-4 lg:col-span-2 xl:col-span-1">
+            <LiveProofDock
+              {...heroProps}
             />
-            <TimelinePanel timeline={timeline} />
+            <GepAssetStream assets={assets} reward={reward} />
+            <div className="grid min-w-0 gap-4 lg:grid-cols-2 xl:grid-cols-1">
+              <BehaviorControlPanel activeGeneId={result.geneId} />
+              <RemoteComputePanel
+                job={remoteJob}
+                jobs={remoteJobs}
+                loading={remoteLoading}
+                onSubmit={submitRemoteJob}
+                onImport={importRemoteArtifacts}
+                onRefresh={refreshRemoteJobs}
+              />
+            </div>
           </aside>
         </div>
       </section>
@@ -374,22 +550,51 @@ export default function Page() {
   );
 }
 
-function TopRail({ source }: { source: SourceMode }) {
+function TopRail({
+  source,
+  liveStatus,
+  lastLiveEventAt,
+  shellMode
+}: {
+  source: SourceMode;
+  liveStatus: LiveStatus;
+  lastLiveEventAt: string | null;
+  shellMode: ShellMode;
+}) {
+  const isElectronShell = shellMode === 'electron';
+  const liveCopy = liveStatus === 'live'
+    ? `Live polling${lastLiveEventAt ? ` · ${formatClock(lastLiveEventAt)}` : ''}`
+    : liveStatus === 'connecting'
+      ? 'Connecting state feed'
+      : 'State feed offline';
+  const subtitle = shellMode === 'codex'
+    ? 'codex review mode'
+    : shellMode === 'electron'
+      ? 'desktop evolution workbench'
+      : 'web control plane';
+
   return (
     <header className="relative z-20 border-b border-white/[0.07] bg-black/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-[1480px] items-center justify-between px-5 lg:px-8">
+      <div className={`mx-auto flex h-14 max-w-[1480px] items-center justify-between px-4 lg:px-5 ${isElectronShell ? 'pl-24 lg:pl-24' : ''}`}>
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04]">
-            <Dna className="h-5 w-5 text-[#19e6ff]" />
+          {!isElectronShell && (
+            <div className="hidden items-center gap-1.5 pr-1 sm:flex">
+              <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
+              <span className="h-3 w-3 rounded-full bg-[#ffbd2e]" />
+              <span className="h-3 w-3 rounded-full bg-[#28c840]" />
+            </div>
+          )}
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04]">
+            <Dna className="h-4 w-4 text-[#19e6ff]" />
           </div>
           <div>
-            <p className="text-sm font-semibold tracking-[-0.03em]">EvoMate Control Plane</p>
-            <p className="text-[11px] uppercase tracking-[0.22em] text-white/35">for Codex / Claude Code / MCP agents</p>
+            <p className="text-sm font-semibold tracking-[-0.03em]">EvoMate × EvoMap</p>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-white/35">{subtitle}</p>
           </div>
         </div>
 
         <div className="hidden items-center gap-2 lg:flex">
-          {['Agent Event', 'Signal Extractor', 'Policy Engine', 'Advisor Injection', 'GEP Ledger'].map((item, index) => (
+          {['Hook', 'MCP', 'Gene', 'Reward', 'GEP'].map((item, index) => (
             <div key={item} className="flex items-center gap-2">
               <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/55">{item}</span>
               {index < 4 && <ChevronRight className="h-3.5 w-3.5 text-white/18" />}
@@ -398,42 +603,373 @@ function TopRail({ source }: { source: SourceMode }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <span className={`h-2 w-2 rounded-full ${source === 'api' ? 'bg-[#83f3b1]' : 'bg-[#f7ce6a]'}`} />
-          <span className="text-sm text-white/55">{source === 'api' ? 'Live Orchestrator' : 'Demo Observer'}</span>
+          <span className={`h-2 w-2 rounded-full ${liveStatus === 'live' ? 'bg-[#83f3b1]' : liveStatus === 'connecting' ? 'bg-[#f7ce6a]' : 'bg-[#ff7d7d]'}`} />
+          <span className="hidden text-sm text-white/55 sm:inline">{liveCopy}</span>
+          <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/45">{source === 'api' ? 'Real State' : 'Demo Seed'}</span>
         </div>
       </div>
     </header>
   );
 }
 
-function ControlPlaneCard({ yesness, delta }: { yesness: number; delta: number }) {
+function CodexReviewHeader({ liveStatus, lastLiveEventAt }: { liveStatus: LiveStatus; lastLiveEventAt: string | null }) {
+  const status = liveStatus === 'live'
+    ? `Live · ${lastLiveEventAt ? formatClock(lastLiveEventAt) : 'now'}`
+    : liveStatus === 'connecting'
+      ? 'Connecting'
+      : 'Offline';
+
   return (
-    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
-      <div className="flex items-center justify-between">
-        <span className="rounded-full border border-[#19e6ff]/25 bg-[#19e6ff]/10 px-3 py-1 text-xs text-[#19e6ff]">Agent evolution layer</span>
-        <Network className="h-5 w-5 text-white/35" />
+    <section className="rounded-[24px] border border-[#19e6ff]/14 bg-[#19e6ff]/[0.035] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.24em] text-[#19e6ff]/70">Codex Website Review</p>
+          <h2 className="mt-1 text-xl font-semibold tracking-[-0.05em] text-white">Annotation-friendly layout</h2>
+        </div>
+        <span className={`rounded-full border px-3 py-1.5 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/20 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/20 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{status}</span>
       </div>
-      <h1 className="mt-8 text-[34px] font-semibold leading-[0.98] tracking-[-0.075em] text-white sm:text-[40px]">
-        Don&apos;t replace<br />your agent.<br /><span className="text-[#19e6ff]">Teach it.</span>
-      </h1>
-      <p className="mt-5 text-sm leading-6 text-white/45">
-        EvoMate 不做另一个聊天框；在 Codex / Claude Code 的会话，把用户反馈转成行为进化和 GEP 资产。
+      <p className="mt-3 text-sm leading-6 text-white/50">
+        单列、少文字、模块边界清楚，适合在 Codex 浏览器里逐块标注修改。
       </p>
-      <div className="mt-7 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
-        <div className="flex items-end justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-white/35">Current Yesness</p>
-            <p className="mt-1 text-4xl font-semibold tracking-[-0.05em] text-[#19e6ff]">{(yesness * 100).toFixed(1)}%</p>
+    </section>
+  );
+}
+
+function ElectronSideNav({
+  result,
+  activeGene,
+  liveStatus,
+  lastLiveEventAt
+}: {
+  result: AnalyzeResult;
+  activeGene: GeneTuple;
+  liveStatus: LiveStatus;
+  lastLiveEventAt: string | null;
+}) {
+  const navItems = [
+    ['Proof Chain', 'Hook → MCP → GEP', <Network key="proof" />],
+    ['Live Session', 'Codex / Claude', <TerminalSquare key="session" />],
+    ['Behavior Gene', activeGene[0], <GitBranch key="gene" />],
+    ['GEP Ledger', 'Mutation assets', <Layers3 key="gep" />],
+    ['Evolution Lab', 'Remote training', <CircuitBoard key="lab" />]
+  ] as const;
+
+  return (
+    <aside className="hidden min-w-0 flex-col rounded-[28px] border border-white/[0.08] bg-[#070707]/92 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.35)] lg:flex">
+      <div className="rounded-2xl border border-[#19e6ff]/16 bg-[#19e6ff]/[0.045] p-4">
+        <p className="text-[10px] uppercase tracking-[0.22em] text-[#19e6ff]/70">Product Mode</p>
+        <h2 className="mt-2 text-xl font-semibold leading-tight tracking-[-0.05em] text-white">
+          Electron<br />workbench
+        </h2>
+        <p className="mt-3 text-xs leading-5 text-white/42">不是网页首页，是本机 Agent 进化驾驶舱。</p>
+      </div>
+
+      <nav className="mt-4 space-y-2">
+        {navItems.map(([label, detail, icon], index) => (
+          <div key={label} className={`group rounded-2xl border px-3 py-3 transition ${index === 0 ? 'border-[#83f3b1]/20 bg-[#83f3b1]/[0.06]' : 'border-white/[0.07] bg-white/[0.022]'}`}>
+            <div className="flex items-center gap-3">
+              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border [&>svg]:h-4 [&>svg]:w-4 ${index === 0 ? 'border-[#83f3b1]/25 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-white/10 bg-black/25 text-white/38'}`}>
+                {icon}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-white">{label}</p>
+                <p className="mt-0.5 truncate text-[11px] text-white/36">{detail}</p>
+              </div>
+            </div>
           </div>
-          <div className="text-right">
-            <Gauge className="ml-auto h-8 w-8 text-[#19e6ff]/70" />
-            <p className={`mt-2 text-sm ${delta >= 0 ? 'text-[#83f3b1]' : 'text-[#ff7d7d]'}`}>{delta >= 0 ? '+' : ''}{(delta * 100).toFixed(1)}%</p>
+        ))}
+      </nav>
+
+      <div className="mt-auto rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] uppercase tracking-[0.2em] text-white/32">Yesness</p>
+          <span className={`h-2 w-2 rounded-full ${liveStatus === 'live' ? 'bg-[#83f3b1]' : 'bg-[#f7ce6a]'}`} />
+        </div>
+        <p className="mt-2 text-3xl font-semibold tracking-[-0.06em] text-[#19e6ff]">{(result.yesness * 100).toFixed(1)}%</p>
+        <p className="mt-2 truncate text-xs text-white/38">{lastLiveEventAt ? `updated ${formatClock(lastLiveEventAt)}` : 'waiting for live event'}</p>
+      </div>
+    </aside>
+  );
+}
+
+function LiveProofDock({
+  result,
+  activeGene,
+  assets,
+  reward,
+  delta,
+  timeline,
+  liveStatus,
+  lastLiveEventAt,
+  flowPulseKey
+}: {
+  result: AnalyzeResult;
+  activeGene: GeneTuple;
+  assets: GepAsset[];
+  reward: RewardResult | null;
+  delta: number;
+  timeline: string[];
+  liveStatus: LiveStatus;
+  lastLiveEventAt: string | null;
+  flowPulseKey: string;
+}) {
+  const latestEvent = timeline[0] ?? 'Waiting for Codex / Claude Code hook event.';
+  const statusCopy = liveStatus === 'live'
+    ? `live ${lastLiveEventAt ? `· ${formatClock(lastLiveEventAt)}` : ''}`
+    : liveStatus === 'connecting'
+      ? 'connecting'
+      : 'offline';
+
+  return (
+    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/92 p-4 xl:sticky xl:top-[72px]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.22em] text-white/32">Live proof</p>
+          <h2 className="mt-1 text-lg font-semibold tracking-[-0.04em] text-white">评委证据包</h2>
+        </div>
+        <span className={`rounded-full border px-2.5 py-1 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/20 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/20 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{statusCopy}</span>
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-[#19e6ff]/16 bg-[#19e6ff]/[0.045] p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">Hook received</p>
+          <MiniPulse liveStatus={liveStatus} pulseKey={flowPulseKey} />
+        </div>
+        <p className="mt-3 line-clamp-2 text-sm leading-6 text-white/62">{latestEvent}</p>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <MetricBox label="MCP Action" value="select_gene" />
+        <MetricBox label="Gene" value={activeGene[0]} tone="mint" />
+        <MetricBox label="Yesness" value={`${(result.yesness * 100).toFixed(1)}%`} />
+        <MetricBox label="Delta" value={`${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`} tone={delta >= 0 ? 'mint' : 'red'} />
+      </div>
+
+      <div className="mt-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
+        <p className="text-xs uppercase tracking-[0.22em] text-white/30">GEP write proof</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {assets.slice(0, 4).map((asset) => (
+            <span key={`${asset.type}_${asset.id}`} className="rounded-full border border-[#83f3b1]/16 bg-[#83f3b1]/[0.06] px-3 py-1.5 text-xs text-[#83f3b1]">{asset.type}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2">
+        <BeforeAfterCard
+          label="Before EvoMate"
+          tone="red"
+          text="直接开干 → 被打断"
+        />
+        <BeforeAfterCard
+          label="After EvoMate"
+          tone="mint"
+          text={`下次执行：${activeGene[0]}`}
+        />
+      </div>
+
+      <div className="mt-3 rounded-2xl border border-white/[0.08] bg-black/25 p-4">
+        <p className="text-xs uppercase tracking-[0.22em] text-white/30">Reward</p>
+        <p className={`mt-2 text-xl font-semibold ${reward && reward.value < 0 ? 'text-[#ff7d7d]' : 'text-[#83f3b1]'}`}>{reward ? formatReward(reward.value) : 'pending'}</p>
+      </div>
+    </section>
+  );
+}
+
+
+function EvoMapProofHero({
+  result,
+  activeGene,
+  assets,
+  reward,
+  delta,
+  timeline,
+  liveStatus,
+  lastLiveEventAt,
+  flowPulseKey
+}: {
+  result: AnalyzeResult;
+  activeGene: GeneTuple;
+  assets: GepAsset[];
+  reward: RewardResult | null;
+  delta: number;
+  timeline: string[];
+  liveStatus: LiveStatus;
+  lastLiveEventAt: string | null;
+  flowPulseKey: string;
+}) {
+  const latestEvent = timeline[0] ?? 'Waiting for Codex / Claude Code hook event.';
+  const nonCapsuleAssets = assets.filter((asset) => asset.type !== 'Capsule');
+  const statusCopy = liveStatus === 'live'
+    ? `live state ${lastLiveEventAt ? `· ${formatClock(lastLiveEventAt)}` : ''}`
+    : liveStatus === 'connecting'
+      ? 'connecting to local state'
+      : 'offline fallback';
+
+  const proofStages: FlowStage[] = [
+    {
+      icon: <RadioTower />,
+      label: '01',
+      title: 'Hook',
+      detail: 'Codex / Claude',
+      tone: 'cyan'
+    },
+    {
+      icon: <PlugZap />,
+      label: '02',
+      title: 'MCP',
+      detail: 'select_gene',
+      tone: 'cyan'
+    },
+    {
+      icon: <GitBranch />,
+      label: '03',
+      title: 'Gene',
+      detail: activeGene[0],
+      tone: 'mint'
+    },
+    {
+      icon: <ThumbsUp />,
+      label: '04',
+      title: 'Reward',
+      detail: reward ? formatReward(reward.value) : `${(result.yesness * 100).toFixed(0)}%`,
+      tone: reward && reward.value < 0 ? 'red' : 'mint'
+    },
+    {
+      icon: <Layers3 />,
+      label: '05',
+      title: 'GEP',
+      detail: `${nonCapsuleAssets.length || assets.length} assets`,
+      tone: 'cyan'
+    },
+    {
+      icon: <Zap />,
+      label: '06',
+      title: 'Next',
+      detail: 'behavior update',
+      tone: 'mint'
+    }
+  ];
+
+  return (
+    <section className="relative min-w-0 overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#050505]/95 p-5 shadow-[0_28px_110px_rgba(0,0,0,0.42)] sm:p-6">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -right-56 -top-56 h-[720px] w-[720px] rounded-full border border-[#19e6ff]/10" />
+        <div className="absolute -right-24 -top-24 h-[420px] w-[420px] rounded-full border border-[#83f3b1]/10" />
+        <div className="absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-[#19e6ff]/50 to-transparent" />
+      </div>
+
+      <div className="relative z-10 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-[#19e6ff]/25 bg-[#19e6ff]/10 px-3 py-1.5 text-xs text-[#19e6ff]">EvoMap Integration Proof</span>
+            <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/45">Hook → MCP → GEP → Evolution</span>
+            <span className={`rounded-full border px-3 py-1.5 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/25 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/25 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{statusCopy}</span>
+          </div>
+
+          <h1 className="mt-5 max-w-4xl text-[34px] font-semibold leading-[0.92] tracking-[-0.08em] text-white sm:text-[46px] xl:text-[54px]">
+            EvoMap-native<br />
+            <span className="text-[#19e6ff]">self-evolving agent layer.</span>
+          </h1>
+          <p className="mt-4 max-w-2xl text-sm leading-6 text-white/50 lg:text-base">
+            Hook 收到真实 Agent 消息后，EvoMate 把它变成一次可追踪的 EvoMap 进化流。
+          </p>
+
+          <EvolutionFlowAnimation
+            stages={proofStages}
+            liveStatus={liveStatus}
+            pulseKey={flowPulseKey}
+          />
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <MetricBox label="Selected Gene" value={activeGene[0]} tone="mint" />
+            <MetricBox label="Yesness" value={`${(result.yesness * 100).toFixed(1)}%`} />
+            <MetricBox label="GEP" value={assets.map((asset) => asset.type).slice(0, 2).join(' + ') || 'pending'} tone="mint" />
           </div>
         </div>
       </div>
     </section>
   );
 }
+
+function EvolutionFlowAnimation({ stages, liveStatus, pulseKey }: { stages: FlowStage[]; liveStatus: LiveStatus; pulseKey: string }) {
+  return (
+    <div className="relative mt-6 min-w-0 overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.025] p-4">
+      <div className="absolute left-8 right-8 top-[50px] hidden h-px bg-gradient-to-r from-[#19e6ff]/20 via-[#19e6ff]/55 to-[#83f3b1]/25 md:block" />
+      {liveStatus !== 'offline' && (
+        <motion.div
+          key={pulseKey}
+          className={`absolute top-[43px] z-20 hidden h-4 w-4 rounded-full md:block ${liveStatus === 'live' ? 'bg-[#83f3b1] shadow-[0_0_24px_rgba(131,243,177,0.9)]' : 'bg-[#f7ce6a] shadow-[0_0_22px_rgba(247,206,106,0.75)]'}`}
+          initial={{ left: '3%', opacity: 0, scale: 0.6 }}
+          animate={{ left: ['3%', '20%', '38%', '56%', '74%', '92%'], opacity: [0, 1, 1, 1, 1, 0], scale: [0.6, 1, 1, 1, 1, 0.7] }}
+          transition={{ duration: 2.8, ease: 'easeInOut' }}
+        />
+      )}
+      <div className="relative z-10 grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+        {stages.map((stage, index) => (
+          <FlowNode key={stage.label} stage={stage} index={index} live={liveStatus !== 'offline'} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FlowNode({ stage, index, live }: { stage: FlowStage; index: number; live: boolean }) {
+  const { icon, label, title, detail, tone } = stage;
+  const toneClasses = tone === 'mint'
+    ? 'border-[#83f3b1]/20 bg-[#83f3b1]/[0.055] text-[#83f3b1]'
+    : tone === 'red'
+      ? 'border-[#ff7d7d]/20 bg-[#ff7d7d]/[0.055] text-[#ff9b9b]'
+      : 'border-[#19e6ff]/20 bg-[#19e6ff]/[0.055] text-[#19e6ff]';
+
+  return (
+    <motion.div
+      className="relative min-w-0 rounded-2xl border border-white/[0.08] bg-black/25 p-2.5"
+      animate={live ? { y: [0, -3, 0], borderColor: ['rgba(255,255,255,0.08)', index === 0 ? 'rgba(25,230,255,0.35)' : 'rgba(131,243,177,0.22)', 'rgba(255,255,255,0.08)'] } : undefined}
+      transition={{ duration: 2.8, delay: index * 0.28, repeat: live ? Infinity : 0, repeatDelay: 2.2 }}
+    >
+      <div className="flex items-center gap-2">
+        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${toneClasses} [&>svg]:h-4 [&>svg]:w-4`}>
+          {icon}
+        </div>
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-white/28">{label}</p>
+          <p className="truncate text-sm font-semibold text-white">{title}</p>
+        </div>
+      </div>
+      <p className="mt-2 truncate text-xs leading-5 text-white/38">{detail}</p>
+    </motion.div>
+  );
+}
+
+function MiniPulse({ liveStatus, pulseKey }: { liveStatus: LiveStatus; pulseKey: string }) {
+  return (
+    <div className="relative h-1.5 w-16 overflow-hidden rounded-full bg-white/[0.08]">
+      {liveStatus !== 'offline' && (
+        <motion.span
+          key={pulseKey}
+          className={`absolute inset-y-0 left-0 w-1/3 rounded-full ${liveStatus === 'live' ? 'bg-gradient-to-r from-[#19e6ff] to-[#83f3b1]' : 'bg-gradient-to-r from-[#f7ce6a] to-[#19e6ff]'}`}
+          initial={{ x: '-120%' }}
+          animate={{ x: '320%' }}
+          transition={{ duration: 1.1, ease: 'easeOut' }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BeforeAfterCard({ label, text, tone }: { label: string; text: string; tone: 'mint' | 'red' }) {
+  const classes = tone === 'mint'
+    ? 'border-[#83f3b1]/18 bg-[#83f3b1]/[0.045] text-[#83f3b1]'
+    : 'border-[#ff7d7d]/18 bg-[#ff7d7d]/[0.045] text-[#ff9b9b]';
+
+  return (
+    <div className={`rounded-2xl border p-4 ${classes}`}>
+      <p className="text-xs uppercase tracking-[0.2em] opacity-80">{label}</p>
+      <p className="mt-2 text-sm leading-6 text-white/60">{text}</p>
+    </div>
+  );
+}
+
 
 function AgentSessionCard({
   eventText,
@@ -453,18 +989,16 @@ function AgentSessionCard({
   recordFeedback: (kind: 'accepted' | 'corrected' | 'interrupted') => void;
 }) {
   return (
-    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
+    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-4">
       <PanelHeader icon={<TerminalSquare />} title="Live Agent Session" subtitle="observer mode" />
-      <div className="mt-5 grid gap-3">
+      <div className="mt-4 grid gap-2">
         <SessionRow label="Source" value="Codex CLI" status="observed" />
-        <SessionRow label="Workspace" value="evo-predict-agent" status="local" />
-        <SessionRow label="Mode" value="Advisor injection" status="next-run" />
       </div>
-      <label className="mt-5 block text-xs uppercase tracking-[0.22em] text-white/32">Simulate / paste agent event</label>
+      <label className="mt-4 block text-xs uppercase tracking-[0.22em] text-white/32">Paste event</label>
       <textarea
         value={eventText}
         onChange={(event) => setEventText(event.target.value)}
-        className="mt-2 min-h-[132px] w-full resize-none rounded-2xl border border-white/[0.1] bg-[#161616] p-4 text-sm leading-6 text-white/72 outline-none transition focus:border-[#19e6ff]/45"
+        className="mt-2 min-h-[88px] w-full resize-none rounded-2xl border border-white/[0.1] bg-[#161616] p-3 text-sm leading-6 text-white/72 outline-none transition focus:border-[#19e6ff]/45"
       />
       <div className="mt-3 grid grid-cols-[1fr_46px] gap-2">
         <button
@@ -555,56 +1089,32 @@ function HeroPanel({ result, activeGene, reward, delta }: { result: AnalyzeResul
 
 function RuntimePipeline({ result, activeGene, assets }: { result: AnalyzeResult; activeGene: GeneTuple; assets: GepAsset[] }) {
   const steps = [
-    { icon: <Bot />, label: 'Existing Agent', value: 'Codex / Claude Code', detail: 'User keeps working in the coding agent they already use.' },
-    { icon: <Cpu />, label: 'Policy Engine', value: activeGene[0], detail: `${(result.yesness * 100).toFixed(1)}% predicted Yesness for this behavior.` },
-    { icon: <PlugZap />, label: 'Advisor Injection', value: 'Next run strategy', detail: activeGene[5] },
-    { icon: <ClipboardList />, label: 'GEP Ledger', value: `${assets.filter((asset) => asset.type !== 'Capsule').length} assets`, detail: 'Mutation and EvolutionEvent make the behavior update auditable.' }
+    { icon: <Bot />, label: 'Agent', value: 'Codex / Claude' },
+    { icon: <Cpu />, label: 'Policy', value: activeGene[0] },
+    { icon: <PlugZap />, label: 'Inject', value: 'Next run' },
+    { icon: <ClipboardList />, label: 'GEP', value: `${assets.filter((asset) => asset.type !== 'Capsule').length} assets` }
   ];
 
   return (
-    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
-      <PanelHeader icon={<Network />} title="Runtime Integration" subtitle="not a chat UI" />
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <section className="min-w-0 rounded-[24px] border border-white/[0.08] bg-[#070707]/90 p-4">
+      <PanelHeader icon={<Network />} title="Runtime" subtitle="compact proof" />
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {steps.map((step, index) => (
-          <div key={step.label} className="relative rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-            {index < steps.length - 1 && <div className="absolute right-[-18px] top-1/2 z-10 hidden h-px w-8 bg-gradient-to-r from-[#19e6ff]/60 to-transparent md:block" />}
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#19e6ff]/20 bg-[#19e6ff]/10 text-[#19e6ff] [&>svg]:h-5 [&>svg]:w-5">{step.icon}</div>
-            <p className="mt-4 text-xs uppercase tracking-[0.22em] text-white/30">0{index + 1} {step.label}</p>
-            <p className="mt-2 truncate font-medium text-white">{step.value}</p>
-            <p className="mt-2 text-sm leading-5 text-white/42">{step.detail}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-4 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-        <div className="min-w-0 rounded-2xl border border-[#19e6ff]/15 bg-[#19e6ff]/[0.035] p-4">
-          <div className="flex min-w-0 items-start justify-between gap-4">
+          <div key={step.label} className="relative flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3">
+            {index < steps.length - 1 && <div className="absolute right-[-13px] top-1/2 z-10 hidden h-px w-6 bg-gradient-to-r from-[#19e6ff]/50 to-transparent xl:block" />}
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#19e6ff]/20 bg-[#19e6ff]/10 text-[#19e6ff] [&>svg]:h-4 [&>svg]:w-4">{step.icon}</div>
             <div className="min-w-0">
-              <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">Semantic Contract</p>
-              <p className="mt-2 text-lg font-semibold tracking-[-0.03em] text-white">{result.semantic.intent}</p>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-white/30">{step.label}</p>
+              <p className="mt-0.5 truncate text-sm font-medium text-white">{step.value}</p>
             </div>
-            <span className="rounded-full border border-[#83f3b1]/20 bg-[#83f3b1]/10 px-3 py-1 text-xs text-[#83f3b1]">
-              {(result.semantic.confidence * 100).toFixed(0)}% parsed
-            </span>
           </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            <MetricBox label="Permission" value={result.semantic.permissionMode} />
-            <MetricBox label="Tone" value={result.semantic.userTone} />
-            <MetricBox label="Risk" value={result.semantic.riskLevel} />
-          </div>
-        </div>
-        <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-          <p className="text-xs uppercase tracking-[0.22em] text-white/30">Routed into 3 layers</p>
-          <div className="mt-3 space-y-2">
-            <SemanticRoute label="Behavior" value={result.semantic.workstyleSignals.join(', ') || 'neutral collaboration policy'} />
-            <SemanticRoute label="Instruction" value={result.semantic.feedbackSemantics?.correctionType || result.semantic.feedbackSemantics?.sentiment || 'no durable correction yet'} />
-            <SemanticRoute label="Workflow" value={result.semantic.toolNeeds.join(', ') || 'default answer workflow'} />
-          </div>
-        </div>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {[...result.semantic.domainSignals, ...result.semantic.toolNeeds].slice(0, 8).map((item) => (
-          <span key={item} className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1.5 text-xs text-white/48">{item}</span>
         ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
+        <span className="rounded-full border border-[#19e6ff]/16 bg-[#19e6ff]/10 px-3 py-1 text-xs text-[#19e6ff]">{result.semantic.intent}</span>
+        <span className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1 text-xs text-white/50">{result.semantic.permissionMode}</span>
+        <span className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1 text-xs text-white/50">{result.riskLevel}</span>
+        <span className="rounded-full border border-[#83f3b1]/16 bg-[#83f3b1]/10 px-3 py-1 text-xs text-[#83f3b1]">{(result.semantic.confidence * 100).toFixed(0)}% parsed</span>
       </div>
     </section>
   );
@@ -621,24 +1131,24 @@ function SemanticRoute({ label, value }: { label: string; value: string }) {
 
 function BehaviorControlPanel({ activeGeneId }: { activeGeneId: string }) {
   return (
-    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
+    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-4">
       <PanelHeader icon={<GitBranch />} title="Behavior Control" subtitle="advisor policy" />
-      <div className="mt-5 space-y-3">
+      <div className="mt-4 space-y-2">
         {genes.map(([label, id, score, body, mode]) => {
           const active = id === activeGeneId;
           return (
-            <div key={id} className={`rounded-2xl border p-4 ${active ? 'border-[#83f3b1]/25 bg-[#83f3b1]/[0.065]' : 'border-white/[0.08] bg-white/[0.025]'}`}>
+            <div key={id} className={`rounded-2xl border p-3 ${active ? 'border-[#83f3b1]/25 bg-[#83f3b1]/[0.065]' : 'border-white/[0.08] bg-white/[0.025]'}`}>
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-medium text-white">{label}</p>
-                  <p className="mt-1 text-xs text-white/35">{mode}</p>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-white">{label}</p>
+                  <p className="mt-1 truncate text-xs text-white/35">{mode}</p>
                 </div>
                 <p className={active ? 'text-[#83f3b1]' : 'text-white/48'}>{(score * 100).toFixed(0)}%</p>
               </div>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.07]">
                 <motion.div initial={{ width: 0 }} animate={{ width: `${score * 100}%` }} className="h-full rounded-full bg-gradient-to-r from-[#19e6ff] to-[#83f3b1]" />
               </div>
-              <p className="mt-3 text-sm leading-5 text-white/42">{body}</p>
+              {active && <p className="mt-2 line-clamp-1 text-xs leading-5 text-white/42">{body}</p>}
             </div>
           );
         })}
@@ -697,19 +1207,12 @@ function RemoteComputePanel({
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
       <PanelHeader icon={<CircuitBoard />} title="Remote Compute" subtitle="gpu distribution" />
-      <div className="mt-5 rounded-2xl border border-[#19e6ff]/15 bg-[#19e6ff]/[0.035] p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">Evolution Lab</p>
-            <p className="mt-2 text-sm leading-5 text-white/62">Local MCP stays fast. Heavy evolution jobs move to remote GPU worker.</p>
-          </div>
-          <Cpu className="h-6 w-6 text-[#19e6ff]" />
-        </div>
-        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <MetricBox label="Host" value={active?.target?.host || 'configured host'} />
-          <MetricBox label="Mode" value={active?.target?.executeRemote ? 'ssh' : 'dry-run'} />
-          <MetricBox label="Status" value={active?.status || 'ready'} tone={active?.status === 'failed' ? 'red' : 'cyan'} />
-        </div>
+      <EvolutionGymCompact active={active} loading={loading} />
+
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <MetricBox label="Host" value={active?.target?.host || 'configured host'} />
+        <MetricBox label="Mode" value={active?.target?.executeRemote ? 'ssh' : 'dry-run'} />
+        <MetricBox label="Status" value={active?.status || 'ready'} tone={active?.status === 'failed' ? 'red' : 'cyan'} />
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
@@ -770,6 +1273,100 @@ function RemoteComputePanel({
   );
 }
 
+function EvolutionGymCompact({ active, loading }: { active: RemoteJob | undefined; loading: boolean }) {
+  const status = active?.status || (loading ? 'running' : 'idle');
+  const cells = Array.from({ length: 36 }, (_, index) => index);
+  const activeCells = status === 'imported'
+    ? 36
+    : status === 'completed'
+      ? 31
+      : status === 'running'
+        ? 24
+        : status === 'queued'
+          ? 16
+          : loading
+            ? 22
+            : 9;
+  const phase = status === 'imported'
+    ? 'GEP bundle imported'
+    : status === 'completed'
+      ? 'validation complete'
+      : status === 'running' || loading
+        ? 'simulating users'
+        : status === 'queued'
+          ? 'queued for worker'
+          : 'ready for gym';
+  const fitness = status === 'failed' ? 0.22 : active?.artifactSummary?.validationScore ?? (active ? 0.72 : 0.58);
+
+  return (
+    <div className="mt-5 overflow-hidden rounded-2xl border border-[#19e6ff]/15 bg-[#19e6ff]/[0.035] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">Evolution Gym</p>
+          <p className="mt-2 text-sm leading-5 text-white/62">Compact simulator: squares are user-behavior scenarios. More light = more mutations survived.</p>
+        </div>
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#19e6ff]/20 bg-black/25 text-[#19e6ff]">
+          <CircuitBoard className="h-4 w-4" />
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-[140px_minmax(0,1fr)]">
+        <div className="relative rounded-2xl border border-white/[0.07] bg-black/30 p-3">
+          <div className="grid grid-cols-6 gap-1.5">
+            {cells.map((cell) => {
+              const lit = cell < activeCells;
+              const wave = (cell % 6) * 0.08 + Math.floor(cell / 6) * 0.06;
+              return (
+                <motion.span
+                  key={`${active?.jobId || 'idle'}_${status}_${cell}`}
+                  initial={{ opacity: 0.08, scale: 0.62 }}
+                  animate={{
+                    opacity: lit ? [0.28, 1, 0.58] : [0.07, 0.18, 0.08],
+                    scale: lit ? [0.78, 1.08, 0.94] : [0.62, 0.76, 0.62],
+                    boxShadow: lit
+                      ? ['0 0 0px rgba(25,230,255,0)', '0 0 14px rgba(25,230,255,0.58)', '0 0 4px rgba(131,243,177,0.26)']
+                      : '0 0 0px rgba(255,255,255,0)'
+                  }}
+                  transition={{
+                    duration: lit ? 1.35 : 2.4,
+                    repeat: Infinity,
+                    repeatType: 'loop',
+                    delay: wave,
+                    ease: 'easeInOut'
+                  }}
+                  className={`aspect-square rounded-[5px] border ${lit ? 'border-[#19e6ff]/30 bg-[#19e6ff]/70' : 'border-white/[0.06] bg-white/[0.04]'}`}
+                />
+              );
+            })}
+          </div>
+          <div className="pointer-events-none absolute inset-0 rounded-2xl bg-[radial-gradient(circle_at_35%_20%,rgba(25,230,255,0.18),transparent_46%)]" />
+        </div>
+
+        <div className="min-w-0">
+          <div className="flex items-center justify-between gap-3">
+            <p className="truncate text-sm font-medium text-white">{phase}</p>
+            <span className="rounded-full border border-[#83f3b1]/16 bg-[#83f3b1]/10 px-2.5 py-1 text-[11px] text-[#83f3b1]">{activeCells}/36</span>
+          </div>
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${Math.round(fitness * 100)}%` }}
+              transition={{ duration: 0.7, ease: 'easeOut' }}
+              className="h-full rounded-full bg-gradient-to-r from-[#19e6ff] via-[#83f3b1] to-white"
+            />
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <MetricBox label="Scenarios" value={String(active ? 128 : 36)} />
+            <MetricBox label="Genes" value="6-way" tone="mint" />
+            <MetricBox label="Fitness" value={`${Math.round(fitness * 100)}%`} tone={fitness > 0.6 ? 'mint' : 'red'} />
+          </div>
+          <p className="mt-3 line-clamp-2 text-xs leading-5 text-white/40">{active?.objective || 'Submit evolution_gym_eval to grow the square field from seed behavior into a validated GEP bundle.'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RemoteStep({ label, active }: { label: string; active: boolean }) {
   return (
     <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2">
@@ -779,15 +1376,21 @@ function RemoteStep({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-function TimelinePanel({ timeline }: { timeline: string[] }) {
+function TimelinePanel({ timeline, liveStatus }: { timeline: string[]; liveStatus: LiveStatus }) {
+  const subtitle = liveStatus === 'live'
+    ? 'live hook feed'
+    : liveStatus === 'connecting'
+      ? 'connecting'
+      : 'offline cache';
+
   return (
-    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
-      <PanelHeader icon={<Activity />} title="Evolution Timeline" subtitle="observer log" />
-      <div className="mt-5 space-y-3">
-        {timeline.map((event, index) => (
-          <div key={`${event}_${index}`} className="min-w-0 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
+    <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-4">
+      <PanelHeader icon={<Activity />} title="Evolution Timeline" subtitle={subtitle} />
+      <div className="mt-4 space-y-2">
+        {timeline.slice(0, 4).map((event, index) => (
+          <div key={`${event}_${index}`} className="min-w-0 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3">
             <p className="text-xs text-[#19e6ff]">evt_0{index + 1}</p>
-            <p className="mt-2 text-sm leading-6 text-white/56">{event}</p>
+            <p className="mt-1 line-clamp-2 text-sm leading-6 text-white/56">{event}</p>
           </div>
         ))}
       </div>
@@ -988,6 +1591,44 @@ function remoteArtifactsToAssets(artifacts: Record<string, unknown>): GepAsset[]
   }
   if (bundle?.id) assets.push({ type: 'EvolutionBundle', id: bundle.id, asset_id: 'remote:imported' });
   return assets;
+}
+
+function formatLiveTimeline(items: EvolutionTimelineItem[]) {
+  return items.slice(0, 6).map((item) => {
+    const eventLabel = item.summary || [item.type, item.geneId].filter(Boolean).join(' ');
+    return `${formatClock(item.createdAt)} · ${eventLabel}`;
+  });
+}
+
+function formatClock(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'now';
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function inferTaskType(signals: string[], fallback: string) {
+  if (signals.includes('coding_task')) return 'coding';
+  if (signals.includes('research_task')) return 'research';
+  if (signals.includes('strategy_discussion') || signals.includes('roadshow_planning')) return 'product';
+  return fallback || 'general';
+}
+
+function inferRiskLevel(signals: string[], fallback: string) {
+  if (signals.includes('high_risk_action')) return 'high';
+  if (signals.includes('permission_sensitive') || signals.includes('coding_task')) return 'medium';
+  return fallback || 'low';
+}
+
+function inferIntentFromTimeline(item: EvolutionTimelineItem | undefined, fallback: string) {
+  const text = `${item?.type ?? ''} ${item?.summary ?? ''}`;
+  if (/agent_event_observed|ask_before|先分析|analysis/i.test(text)) return 'analysis_before_execution';
+  if (/remote|evolution_gym|validation/i.test(text)) return 'remote_evolution';
+  if (/feedback|reward|accepted|corrected|interrupted|rejected/i.test(text)) return 'feedback_learning';
+  return fallback;
 }
 
 function formatReward(value: number) {

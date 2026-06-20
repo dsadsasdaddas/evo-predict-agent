@@ -20,6 +20,11 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/evomate-claude-hook.sh observe user_prompt_submit",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/evomate-claude-inject.sh user_prompt_submit",
+            "timeout": 5
           }
         ]
       }

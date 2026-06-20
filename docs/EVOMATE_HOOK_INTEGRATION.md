@@ -26,6 +26,7 @@ Codex / Claude Code / Cursor
 ```bash
 npm --silent run evomate:observe -- --source codex --event user_message --content "先分析这个 hook 怎么做"
 npm --silent run evomate:advisor -- --source codex --event advisor_prepare --input "改一下前端" --text
+npm --silent run evomate:advisor -- --source codex --event user_prompt_submit --input "改一下前端" --hook-json --hook-event-name UserPromptSubmit
 npm --silent run evomate:outcome -- --source codex --event task_completed --outcome success --content "用户接受了改动"
 ```
 
@@ -81,6 +82,103 @@ Outcome:
 3. **Control mode** — future mode. EvoMate selects workflow/tool routes before execution.
 
 Current implementation is Observer + Advisor. Control mode stays opt-in because we do not want to break the original agent UX.
+
+## Auto-injection path
+
+`UserPromptSubmit` now has two hook commands:
+
+```text
+Codex / Claude Code prompt
+  -> observe hook: write lifecycle signal to EvoMate
+  -> inject hook: call /api/advisor/prepare
+  -> sidecar returns hookSpecificOutput.additionalContext
+  -> host model receives EvoMate Advisor block in the next turn context
+```
+
+Generated hook JSON shape:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "EvoMate Advisor ..."
+  }
+}
+```
+
+Files:
+
+| Host | Observe adapter | Injection adapter | Config |
+| --- | --- | --- | --- |
+| Codex | `.codex/hooks/evomate-codex-hook.sh` | `.codex/hooks/evomate-codex-inject.sh` | `.codex/hooks.json` |
+| Claude Code | `.claude/hooks/evomate-claude-hook.sh` | `.claude/hooks/evomate-claude-inject.sh` | `.claude/settings.json` |
+
+Injection is fail-open:
+
+- stdout is always hook JSON (`{}` on empty input / API timeout)
+- API timeout defaults to `1200ms` in injection scripts
+- advisor context is capped by `EVOMATE_ADVISOR_MAX_CONTEXT_CHARS`, default `9000`
+- secrets are redacted before queue/API posting
+- the original Codex / Claude Code task continues even when EvoMate is down
+
+### Codex CLI trust gotcha
+
+Codex CLI only runs trusted hooks unless launched with `--dangerously-bypass-hook-trust`.
+After adding a second `UserPromptSubmit` hook for advisor injection, the CLI may still run
+the old observe hook but silently skip the new inject hook until its `trusted_hash` is recorded
+under `~/.codex/config.toml`:
+
+```toml
+[hooks.state."/path/to/project/.codex/hooks.json:user_prompt_submit:0:1"]
+trusted_hash = "sha256:..."
+```
+
+Diagnosis:
+
+```bash
+codex exec -C /path/to/project "Reply exactly: hook-test"
+```
+
+Expected healthy output shows two `UserPromptSubmit` lines:
+
+```text
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+```
+
+If only one line appears, observe is trusted but advisor injection is not. Either approve the
+hook in Codex's startup hook review UI, or run a trusted installer that computes and writes the
+current hook hashes. For one-off debugging only:
+
+```bash
+codex exec --dangerously-bypass-hook-trust -C /path/to/project "Reply exactly: hook-test"
+```
+
+Manual smoke test:
+
+```bash
+printf '{"prompt":"我们没有真训练吗，把完整机器学习训练闭环做出来","session_id":"local"}' \
+  | .codex/hooks/evomate-codex-inject.sh \
+  | python3 -m json.tool
+```
+
+## CLI state panel
+
+Hook stdout must stay machine-readable, so dynamic EvoMate state should be shown through a separate
+CLI status command instead of printing inside hook scripts:
+
+```bash
+npm --silent run evomate:status
+npm --silent run evomate:status -- --watch
+npm --silent run evomate:status -- --json
+```
+
+The panel shows API health, current phase, Yesness, latest selected Behavior Gene, installed trained
+models, hook queue counts, and the latest Evolution Timeline events. It is the terminal equivalent
+of the web dashboard for Codex CLI users.
+
 
 ## EvoMap fit
 

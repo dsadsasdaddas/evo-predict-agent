@@ -37,7 +37,8 @@ packages/evomate-core/src/jobs.ts       # shared job schema and command plan
 apps/api/src/remote-jobs.ts             # API-side job queue + artifact import
 apps/api/src/server.ts                  # /api/remote-jobs routes
 packages/evomate-mcp/src/server.ts      # MCP tools for remote jobs
-evo_predict_agent/remote_worker.py      # Python worker skeleton
+evo_predict_agent/remote_worker.py      # Python worker: replay + full training dispatch
+evo_predict_agent/training/*            # reward model / policy model / memory index training
 deploy/remote/*.sh                      # bootstrap / sync / submit / import scripts
 apps/web/app/page.tsx                   # Remote Compute panel in the control plane
 ```
@@ -168,15 +169,14 @@ curl -X POST http://localhost:8787/api/remote-jobs/<job_id>/import
 
 ## Roadshow Story
 
-> EvoMate keeps the agent runtime local through MCP, but distributes long-horizon evolution to a remote GPU worker. Every heavy job returns auditable artifacts: policy evaluation, validation report, suggested mutations, and an evolution bundle. These artifacts are then mapped into EvoMap's Gene / Mutation / Capsule / ValidationReport worldview.
+> EvoMate keeps the agent runtime local through MCP, but distributes long-horizon evolution to a remote worker. The current worker performs real training for a pairwise preference reward model, a behavior policy model, and a user-memory embedding index, then returns auditable artifacts: policy evaluation, validation report, suggested mutations, model files, and an evolution bundle.
 
 ## Next Hardening Steps
 
 ```text
-1. Replace prototype artifact generation with real remote-only imports.
-2. Add JSONL feedback store and dataset compaction.
-3. Add PyTorch preference model behind preference_train.
-4. Add FAISS / embedding index behind embedding_build.
-5. Convert imported artifacts into official GEP assets through recordFeedbackGepAssets / Evolution Composer.
-6. Add job auth and signed artifact hashes before public deployment.
+1. Add JSONL feedback compaction from long-running hook sessions.
+2. Upgrade pairwise reward model to PyTorch/Transformer when the dataset is large enough.
+3. Upgrade hashed embedding index to FAISS or SQLite vector search.
+4. Convert imported training artifacts into official GEP assets through recordFeedbackGepAssets / Evolution Composer.
+5. Add job auth and signed artifact hashes before public deployment.
 ```

@@ -22,6 +22,7 @@ User Input / Feedback
     -> Behavior Policy Evolution Layer
     -> Instruction Evolution Layer
     -> Workflow / Tool Evolution Layer
+    -> Gene Tournament Selector
   -> Evolution Composer
   -> EvoMap GEP Assets
 ```
@@ -37,13 +38,45 @@ Roadshow-ready Mermaid diagrams are recorded in `docs/EVOMATE_ARCHITECTURE_DIAGR
 ```text
 1. User sends request
 2. Backend extracts signals
-3. Backend calls EvoMap recall for matching Genes/Capsules
-4. Backend selects or mutates a Behavior Gene
-5. Agent answers or dispatches execution worker
-6. User feedback is captured
-7. Backend records outcome into EvoMap memory
-8. Successful behavior is solidified into Capsule
-9. Future similar requests recall the Capsule/Gene
+3. Online bandit / reward model / policy model / memory lane score candidate genes
+4. Gene Tournament runs pairwise Behavior Gene elections
+5. Winning Behavior Gene generates Advisor Prompt / MCP route
+6. Agent answers or dispatches execution worker
+7. User feedback is captured
+8. Backend records outcome into EvoMap memory
+9. Successful behavior is solidified into Capsule
+10. Future similar requests recall the Capsule/Gene
+```
+
+## Gene Tournament Selector
+
+EvoMate does not simply pick the highest raw score. The final behavior is elected through a weighted Condorcet tournament:
+
+```mermaid
+flowchart TD
+  A["Candidate Behavior Genes"] --> B["Pairwise Matches"]
+  B --> C1["Online Bandit Voter"]
+  B --> C2["Reward Model Voter"]
+  B --> C3["Policy Model Voter"]
+  B --> C4["Memory Similarity Voter"]
+
+  C1 --> D["Weighted Head-to-Head Votes"]
+  C2 --> D
+  C3 --> D
+  C4 --> D
+
+  D --> E["Condorcet Winner if one gene beats all others"]
+  D --> F["Copeland fallback: wins -> margin -> weighted blend"]
+  E --> G["Selected Behavior Gene"]
+  F --> G
+  G --> H["Advisor Prompt / MCP Workflow"]
+```
+
+This gives the roadshow a clear concept:
+
+```text
+EvoMate holds an election before every agent turn. The output is not just an answer;
+it is the behavior mode the agent should become for this user right now.
 ```
 
 ## Behavior Gene Examples

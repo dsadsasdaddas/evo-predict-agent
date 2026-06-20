@@ -1,4 +1,4 @@
-import type { UserInputSignal } from '@evomate/core';
+import { normalizeExternalSemantic, type SemanticNormalizationResult, type SemanticParseResult, type UserInputSignal } from '@evomate/core';
 
 export interface EvoMapLlmConfig {
   baseUrl: string;
@@ -11,12 +11,16 @@ export interface LlmSignalExtraction {
   source: 'evomap_llm';
   used: boolean;
   enabled: boolean;
+  schemaVersion?: SemanticParseResult['schemaVersion'];
   taskType?: UserInputSignal['taskType'];
   riskLevel?: UserInputSignal['riskLevel'];
   intent?: string;
   tone?: string;
+  permissionMode?: SemanticParseResult['permissionMode'];
   confidence?: number;
   signals: string[];
+  semantic?: SemanticParseResult;
+  normalization?: Omit<SemanticNormalizationResult, 'semantic' | 'raw'>;
   rationale?: string;
   error?: string;
 }
@@ -27,8 +31,7 @@ export interface SignalExtractionTrace {
   merged: UserInputSignal;
 }
 
-const TASK_TYPES = new Set<UserInputSignal['taskType']>(['coding', 'product', 'research', 'general']);
-const RISK_LEVELS = new Set<UserInputSignal['riskLevel']>(['low', 'medium', 'high']);
+const LLM_OVERRIDE_CONFIDENCE = 0.55;
 
 export function getEvoMapLlmConfig(): EvoMapLlmConfig | null {
   const rawKey = process.env.EVOMAP_LLM_API_KEY || process.env.EVOMAP_OPENAI_API_KEY || compatibleFallbackKey();
@@ -75,8 +78,10 @@ export async function extractSignalsWithEvoMapLlm(input: string, seed: UserInput
 export function mergeSignals(seed: UserInputSignal, llm: LlmSignalExtraction): UserInputSignal {
   if (!llm.used) return seed;
   const signals = [...new Set([...seed.signals, ...llm.signals.map(normalizeSignalName).filter(Boolean)])];
-  const taskType = llm.taskType ?? seed.taskType;
-  const riskLevel = maxRisk(seed.riskLevel, llm.riskLevel ?? seed.riskLevel);
+  const canOverride = (llm.confidence ?? 0) >= LLM_OVERRIDE_CONFIDENCE;
+  const taskType = canOverride ? llm.taskType ?? seed.taskType : seed.taskType;
+  const riskLevel = canOverride ? maxRisk(seed.riskLevel, llm.riskLevel ?? seed.riskLevel) : seed.riskLevel;
+  const llmSemantic = llm.semantic;
   return {
     rawInput: seed.rawInput,
     taskType,
@@ -84,6 +89,18 @@ export function mergeSignals(seed: UserInputSignal, llm: LlmSignalExtraction): U
     signals,
     semantic: {
       ...seed.semantic,
+      ...(canOverride && llmSemantic
+        ? {
+            intent: llmSemantic.intent,
+            permissionMode: llmSemantic.permissionMode,
+            userTone: llmSemantic.userTone,
+            workstyleSignals: llmSemantic.workstyleSignals,
+            domainSignals: llmSemantic.domainSignals,
+            toolNeeds: llmSemantic.toolNeeds,
+            feedbackSemantics: llmSemantic.feedbackSemantics
+          }
+        : {}),
+      schemaVersion: seed.semantic.schemaVersion,
       taskType,
       riskLevel,
       signals,
@@ -113,8 +130,13 @@ async function callEvoMapSignalExtractor(config: EvoMapLlmConfig, input: string,
               'You are EvoMate\'s structured signal extractor.',
               'Return ONLY compact JSON. No markdown.',
               'Your job is not to answer the user. Your job is to classify the request for an agent behavior policy engine.',
-              'Valid task_type values: coding, product, research, general.',
-              'Valid risk_level values: low, medium, high.',
+              'Use the exact internal schema fields when possible.',
+              'schemaVersion must be evomate.semantic.v1.',
+              'Valid taskType values: coding, product, research, general.',
+              'Valid intent values: analysis_before_execution, direct_execution, architecture_planning, frontend_iteration, roadshow_packaging, ml_optimization, research_and_compare, general_help.',
+              'Valid riskLevel values: low, medium, high.',
+              'Valid permissionMode values: safe_to_execute, ask_before_editing, analysis_only, unknown.',
+              'Valid userTone values: direct, impatient, cautious, exploratory, neutral.',
               'Use snake_case signal names. Prefer existing seed signals if correct, add missing ones if useful.',
               'Useful signals include: coding_task, ambiguous_execution_permission, permission_sensitive, user_interruption, high_risk_action, mcp_native, evomap_integration, strategy_discussion, roadshow_planning, rapid_iteration, impatient_user, research_task, external_source_required, visualization_request, architecture_request, ml_policy, yes_engineer, infrastructure.'
             ].join('\n')
@@ -125,12 +147,18 @@ async function callEvoMapSignalExtractor(config: EvoMapLlmConfig, input: string,
               input,
               seed_signal_extraction: seed,
               output_schema: {
-                task_type: 'coding | product | research | general',
-                risk_level: 'low | medium | high',
-                intent: 'short phrase',
-                tone: 'short phrase',
-                confidence: '0..1',
+                schemaVersion: 'evomate.semantic.v1',
+                taskType: 'coding | product | research | general',
+                intent: 'analysis_before_execution | direct_execution | architecture_planning | frontend_iteration | roadshow_packaging | ml_optimization | research_and_compare | general_help',
+                riskLevel: 'low | medium | high',
+                permissionMode: 'safe_to_execute | ask_before_editing | analysis_only | unknown',
+                userTone: 'direct | impatient | cautious | exploratory | neutral',
+                workstyleSignals: ['snake_case_signal'],
+                domainSignals: ['snake_case_signal'],
+                toolNeeds: ['snake_case_tool_need'],
+                feedbackSemantics: null,
                 signals: ['snake_case_signal'],
+                confidence: 0.0,
                 rationale: 'one sentence'
               }
             })
@@ -148,33 +176,35 @@ async function callEvoMapSignalExtractor(config: EvoMapLlmConfig, input: string,
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error('evomap_llm_empty_response');
-    return normalizeExtraction(parseJsonObject(content));
+    return normalizeExtraction(parseJsonObject(content), seed);
   } finally {
     clearTimeout(timer);
   }
 }
 
-function normalizeExtraction(value: Record<string, unknown>): LlmSignalExtraction {
-  const taskType = typeof value.task_type === 'string' && TASK_TYPES.has(value.task_type as UserInputSignal['taskType'])
-    ? value.task_type as UserInputSignal['taskType']
-    : undefined;
-  const riskLevel = typeof value.risk_level === 'string' && RISK_LEVELS.has(value.risk_level as UserInputSignal['riskLevel'])
-    ? value.risk_level as UserInputSignal['riskLevel']
-    : undefined;
-  const signals = Array.isArray(value.signals)
-    ? value.signals.map((item) => typeof item === 'string' ? normalizeSignalName(item) : '').filter(Boolean)
-    : [];
+function normalizeExtraction(value: Record<string, unknown>, seed: UserInputSignal): LlmSignalExtraction {
+  const normalized = normalizeExternalSemantic(value, seed.semantic);
+  const semantic = normalized.semantic;
 
   return {
     source: 'evomap_llm',
     enabled: true,
-    used: true,
-    taskType,
-    riskLevel,
-    intent: typeof value.intent === 'string' ? value.intent.slice(0, 120) : undefined,
-    tone: typeof value.tone === 'string' ? value.tone.slice(0, 80) : undefined,
-    confidence: typeof value.confidence === 'number' ? clamp(value.confidence, 0, 1) : undefined,
-    signals: [...new Set(signals)],
+    used: normalized.ok,
+    schemaVersion: semantic.schemaVersion,
+    taskType: semantic.taskType,
+    riskLevel: semantic.riskLevel,
+    intent: semantic.intent,
+    tone: semantic.userTone,
+    permissionMode: semantic.permissionMode,
+    confidence: semantic.confidence,
+    signals: [...new Set(semantic.signals.map(normalizeSignalName).filter(Boolean))],
+    semantic,
+    normalization: {
+      ok: normalized.ok,
+      acceptedFields: normalized.acceptedFields,
+      repairedFields: normalized.repairedFields,
+      errors: normalized.errors
+    },
     rationale: typeof value.rationale === 'string' ? value.rationale.slice(0, 240) : undefined
   };
 }

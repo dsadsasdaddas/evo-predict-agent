@@ -81,6 +81,9 @@ export interface RemoteWorkerArtifact {
   validationReport?: Record<string, unknown>;
   suggestedMutations?: unknown[];
   evolutionBundle?: Record<string, unknown>;
+  preferenceModel?: Record<string, unknown>;
+  policyModel?: Record<string, unknown>;
+  embeddingIndex?: Record<string, unknown>;
 }
 
 export function createRemoteEvolutionJob(input: RemoteEvolutionJobInput, target: RemoteComputeTarget): RemoteEvolutionJob {
@@ -159,7 +162,10 @@ export function summarizeRemoteArtifacts(artifact: RemoteWorkerArtifact): Remote
     artifact.policyEval ? 'policy_eval.json' : '',
     artifact.validationReport ? 'validation_report.json' : '',
     artifact.suggestedMutations ? 'suggested_mutations.json' : '',
-    artifact.evolutionBundle ? 'evolution_bundle.json' : ''
+    artifact.evolutionBundle ? 'evolution_bundle.json' : '',
+    artifact.preferenceModel ? 'preference_model.json' : '',
+    artifact.policyModel ? 'policy_model.json' : '',
+    artifact.embeddingIndex ? 'embedding_index.json' : ''
   ].filter(Boolean);
 
   const validationScore = typeof artifact.validationReport?.score === 'number'

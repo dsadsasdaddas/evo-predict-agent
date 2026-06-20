@@ -43,6 +43,8 @@ The parser should output structured meaning:
 
 ```json
 {
+  "schemaVersion": "evomate.semantic.v1",
+  "rawInput": "你先看这个仓库，别乱动代码，我们要做 EvoMap-native Yes Engineer。",
   "taskType": "coding",
   "intent": "analysis_before_execution",
   "riskLevel": "medium",
@@ -56,8 +58,75 @@ The parser should output structured meaning:
   "domainSignals": ["evomap", "mcp", "ml_policy"],
   "toolNeeds": ["repo_inspection", "frontend_iteration"],
   "feedbackSemantics": null,
+  "signals": [
+    "coding_task",
+    "ambiguous_execution_permission",
+    "permission_sensitive",
+    "evomap_integration",
+    "mcp_native"
+  ],
   "confidence": 0.86
 }
+```
+
+## Stable Field Contract
+
+Only the internal contract below can enter ML, Gene Tournament, training, advisor generation, or GEP writing:
+
+| Field | Allowed values / shape |
+| --- | --- |
+| `schemaVersion` | `"evomate.semantic.v1"` |
+| `rawInput` | original user text |
+| `taskType` | `coding` / `product` / `research` / `general` |
+| `intent` | `analysis_before_execution` / `direct_execution` / `architecture_planning` / `frontend_iteration` / `roadshow_packaging` / `ml_optimization` / `research_and_compare` / `general_help` |
+| `riskLevel` | `low` / `medium` / `high` |
+| `permissionMode` | `safe_to_execute` / `ask_before_editing` / `analysis_only` / `unknown` |
+| `userTone` | `direct` / `impatient` / `cautious` / `exploratory` / `neutral` |
+| `workstyleSignals` | `string[]`, normalized snake_case |
+| `domainSignals` | `string[]`, normalized snake_case |
+| `toolNeeds` | `string[]`, normalized snake_case |
+| `feedbackSemantics` | `null` or `{ sentiment, correctionType?, rewardHint }` |
+| `signals` | `string[]`, normalized snake_case |
+| `confidence` | number in `0..1` |
+
+External LLM JSON is not trusted directly:
+
+```text
+LLM JSON
+  -> parse
+  -> normalize aliases
+  -> validate allowed fields
+  -> confidence gate
+  -> merge with rule-based seed parser
+  -> SemanticParseResult v1
+```
+
+Accepted aliases are repaired into the stable field names. Examples:
+
+```text
+task / task_type / taskType       -> taskType
+risk / risk_level / riskLevel     -> riskLevel
+tone / user_tone / userTone       -> userTone
+permission / permission_mode      -> permissionMode
+tools / tool_hints / toolNeeds    -> toolNeeds
+```
+
+Value aliases are also repaired:
+
+```text
+repo / programming    -> coding
+dangerous / risky     -> high
+read_only / no_edit   -> analysis_only
+corrective            -> cautious
+training / model      -> ml_optimization
+```
+
+The implementation lives in:
+
+```text
+packages/evomate-core/src/semantic.ts
+packages/evomate-core/src/semantic-schema.ts
+apps/api/src/evomap-llm.ts
 ```
 
 ## Three Evolution Layers

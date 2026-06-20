@@ -6,12 +6,14 @@
   "bin": {
     "evomate-observe": "./src/observe.ts",
     "evomate-advisor": "./src/advisor.ts",
-    "evomate-outcome": "./src/outcome.ts"
+    "evomate-outcome": "./src/outcome.ts",
+    "evomate-status": "./src/status.ts"
   },
   "scripts": {
     "observe": "tsx src/observe.ts",
     "advisor": "tsx src/advisor.ts",
     "outcome": "tsx src/outcome.ts",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "status": "tsx src/status.ts"
   }
 }

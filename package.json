@@ -17,7 +17,10 @@
     "evomate:outcome": "npm --silent run outcome -w packages/evomate-sidecar --",
     "evomate:check": "npm run check --workspaces --if-present",
     "test:python": "python3 -m unittest discover -s tests -v",
-    "check": "npm run gep:schema-validate && npm run evomate:check && npm run test:python"
+    "check": "npm run gep:schema-validate && npm run evomate:check && npm run test:python",
+    "evomate:desktop": "npm run dev -w apps/desktop",
+    "evomate:desktop:check": "npm run check -w apps/desktop",
+    "evomate:status": "npm --silent run status -w packages/evomate-sidecar --"
   },
   "dependencies": {
     "@evomap/gep-sdk": "latest",

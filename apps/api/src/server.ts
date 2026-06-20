@@ -14,6 +14,7 @@ import {
   readRemoteEvolutionJob,
   submitRemoteEvolutionJob
 } from './remote-jobs.js';
+import { enhanceDecisionWithTrainedModels } from './trained-models.js';
 import {
   applyFeedback,
   createInitialEvolutionState,
@@ -112,6 +113,12 @@ app.post('/api/remote-jobs/submit', async (c) => {
     ...parsed.data,
     type: parsed.data.type as RemoteJobType
   }, state);
+  await saveState(prependTimeline(state, [runtimeTimelineEvent({
+    type: 'remote_job_queued',
+    summary: `Remote ${result.job.type} queued as ${result.job.jobId} in ${result.mode}`,
+    score: 0.55,
+    signals: ['remote_compute', result.job.type]
+  })], 'reflect'));
   return c.json(result);
 });
 
@@ -127,6 +134,13 @@ app.get('/api/remote-jobs/:jobId', async (c) => {
 app.post('/api/remote-jobs/:jobId/import', async (c) => {
   try {
     const result = await importRemoteEvolutionArtifacts(c.req.param('jobId'));
+    const state = await loadState();
+    await saveState(prependTimeline(state, [runtimeTimelineEvent({
+      type: 'remote_job_imported',
+      summary: `Imported ${result.job.artifactSummary?.evolutionBundleId || result.job.jobId}; validation=${Math.round((result.job.artifactSummary?.validationScore || 0) * 100)}%`,
+      score: result.job.artifactSummary?.validationScore ?? 0.75,
+      signals: ['remote_compute', result.job.type, 'training_artifacts']
+    })], 'solidify_capsule'));
     return c.json(result);
   } catch (err) {
     return c.json({ error: 'remote_artifact_import_failed', details: err instanceof Error ? err.message : String(err) }, 500);
@@ -145,24 +159,13 @@ app.post('/api/interactions/analyze', async (c) => {
     workspace: typeof body.workspace === 'string' ? body.workspace : undefined,
     sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined
   });
-  const { signalExtraction, signal, policyDecision, gene, predictedSatisfaction } = advisor;
+  const { signalExtraction, signal, policyDecision, trainedModelInsight, gene, predictedSatisfaction } = advisor;
 
-  const nextState: EvolutionState = {
-    ...state,
-    phase: 'strategy_decision',
-    timeline: [
-      {
-        id: `evt_${Date.now()}`,
-        type: 'gene_selected',
-        summary: `Selected ${gene.id} for signals: ${signal.signals.join(', ') || 'none'} via ${signalExtraction.llm.used ? 'evomap_llm' : 'seed_rules'}`,
-        score: predictedSatisfaction,
-        createdAt: new Date().toISOString(),
-        geneId: gene.id,
-        signals: signal.signals
-      },
-      ...state.timeline
-    ].slice(0, 100)
-  };
+  const nextState = prependTimeline(
+    state,
+    buildAdvisorTrace(input, { source: typeof body.source === 'string' ? body.source : 'manual', event: 'interaction_analyze' }, advisor),
+    'strategy_decision'
+  );
   await saveState(nextState);
 
   return c.json({
@@ -171,6 +174,7 @@ app.post('/api/interactions/analyze', async (c) => {
     signalExtraction,
     gene,
     policyDecision,
+    trainedModelInsight,
     predictedSatisfaction,
     advisorPrompt: advisor.advisorPrompt,
     state: nextState
@@ -183,15 +187,22 @@ app.post('/api/feedback', async (c) => {
 
   const state = await loadState();
   const rewardPreview = previewFeedbackReward(parsed.data);
-  const nextState = applyFeedback(state, parsed.data);
-  await saveState(nextState);
+  const feedbackState = applyFeedback(state, parsed.data);
   const gepAssets = await recordFeedbackGepAssets({
     beforeState: state,
-    afterState: nextState,
+    afterState: feedbackState,
     feedback: parsed.data,
     reward: rewardPreview,
     prompt: parsed.data.text
   });
+  const nextState = prependTimeline(feedbackState, [runtimeTimelineEvent({
+    type: 'gep_assets_written',
+    summary: `GEP wrote ${gepAssets.written?.map((asset: { type?: string }) => asset.type).filter(Boolean).join(' + ') || 'evolution assets'} for feedback ${parsed.data.kind}`,
+    score: rewardPreview.yesness,
+    geneId: parsed.data.geneId,
+    signals: parsed.data.signals
+  })], 'record_outcome');
+  await saveState(nextState);
   return c.json({ ok: true, reward: rewardPreview, gepAssets, state: nextState });
 });
 
@@ -201,6 +212,8 @@ app.post('/api/advisor/prepare', async (c) => {
 
   const state = await loadState();
   const advisor = await prepareAdvisor(parsed.data.input, state, parsed.data);
+  const nextState = prependTimeline(state, buildAdvisorTrace(parsed.data.input, parsed.data, advisor), 'strategy_decision');
+  await saveState(nextState);
   return c.json({
     ok: true,
     mode: 'read_only_advisor',
@@ -213,6 +226,7 @@ app.post('/api/advisor/prepare', async (c) => {
     signalExtraction: advisor.signalExtraction,
     gene: advisor.gene,
     policyDecision: advisor.policyDecision,
+    trainedModelInsight: advisor.trainedModelInsight,
     predictedSatisfaction: advisor.predictedSatisfaction
   });
 });
@@ -234,22 +248,7 @@ app.post('/api/agent-events/observe', async (c) => {
 
   const state = await loadState();
   const advisor = await prepareAdvisor(input, state, event);
-  const nextState: EvolutionState = {
-    ...state,
-    phase: 'user_input_received',
-    timeline: [
-      {
-        id: `evt_hook_${Date.now()}`,
-        type: 'agent_event_observed',
-        summary: `${event.source}:${event.event} selected ${advisor.gene.id} for ${advisor.signal.signals.join(', ') || 'empty signals'}`,
-        score: advisor.predictedSatisfaction,
-        createdAt: new Date().toISOString(),
-        geneId: advisor.gene.id,
-        signals: advisor.signal.signals
-      },
-      ...state.timeline
-    ].slice(0, 100)
-  };
+  const nextState = prependTimeline(state, buildAdvisorTrace(input, event, advisor), 'strategy_decision');
   await saveState(nextState);
 
   return c.json({
@@ -266,6 +265,7 @@ app.post('/api/agent-events/observe', async (c) => {
     signalExtraction: advisor.signalExtraction,
     gene: advisor.gene,
     policyDecision: advisor.policyDecision,
+    trainedModelInsight: advisor.trainedModelInsight,
     predictedSatisfaction: advisor.predictedSatisfaction,
     state: nextState
   });
@@ -288,15 +288,22 @@ app.post('/api/agent-events/outcome', async (c) => {
 
   const state = await loadState();
   const rewardPreview = previewFeedbackReward(feedback);
-  const nextState = applyFeedback(state, feedback);
-  await saveState(nextState);
+  const feedbackState = applyFeedback(state, feedback);
   const gepAssets = await recordFeedbackGepAssets({
     beforeState: state,
-    afterState: nextState,
+    afterState: feedbackState,
     feedback,
     reward: rewardPreview,
     prompt: content
   });
+  const nextState = prependTimeline(feedbackState, [runtimeTimelineEvent({
+    type: 'gep_assets_written',
+    summary: `GEP wrote ${gepAssets.written?.map((asset: { type?: string }) => asset.type).filter(Boolean).join(' + ') || 'evolution assets'} for outcome ${feedback.kind}`,
+    score: rewardPreview.yesness,
+    geneId: feedback.geneId,
+    signals: feedback.signals
+  })], 'record_outcome');
+  await saveState(nextState);
 
   return c.json({
     ok: true,
@@ -346,21 +353,97 @@ interface AdvisorContext {
   sessionId?: string;
 }
 
+type TimelineEventInput = {
+  type: string;
+  summary: string;
+  score?: number;
+  geneId?: string;
+  signals?: string[];
+};
+
+function runtimeTimelineEvent(input: TimelineEventInput): EvolutionState['timeline'][number] {
+  return {
+    id: `evt_${input.type}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    type: input.type,
+    summary: input.summary,
+    score: clampScore(input.score ?? 0.5),
+    createdAt: new Date().toISOString(),
+    geneId: input.geneId,
+    signals: input.signals
+  };
+}
+
+function prependTimeline(state: EvolutionState, events: Array<EvolutionState['timeline'][number]>, phase: EvolutionState['phase']): EvolutionState {
+  return {
+    ...state,
+    phase,
+    timeline: [...events, ...state.timeline].slice(0, 100)
+  };
+}
+
+function buildAdvisorTrace(input: string, context: AdvisorContext, advisor: Awaited<ReturnType<typeof prepareAdvisor>>): Array<EvolutionState['timeline'][number]> {
+  const source = normalizeHookText(context.source, 'manual');
+  const event = normalizeHookText(context.event, 'advisor_prepare');
+  const signals = advisor.signal.signals;
+  const semantic = advisor.signal.semantic;
+  const llmLabel = advisor.signalExtraction.llm.used ? 'EvoMap LLM' : 'seed parser';
+  return [
+    runtimeTimelineEvent({
+      type: 'advisor_injected',
+      summary: `${source}:${event} injected ${advisor.gene.id} advisor prompt`,
+      score: advisor.predictedSatisfaction,
+      geneId: advisor.gene.id,
+      signals
+    }),
+    runtimeTimelineEvent({
+      type: 'tournament_completed',
+      summary: `Gene tournament selected ${advisor.gene.id}; yesness=${Math.round(advisor.predictedSatisfaction * 100)}%`,
+      score: advisor.predictedSatisfaction,
+      geneId: advisor.gene.id,
+      signals
+    }),
+    runtimeTimelineEvent({
+      type: 'semantic_parsed',
+      summary: `${llmLabel} parsed task=${semantic.taskType}, intent=${semantic.intent}, risk=${semantic.riskLevel}, permission=${semantic.permissionMode}`,
+      score: semantic.confidence,
+      geneId: advisor.gene.id,
+      signals
+    }),
+    runtimeTimelineEvent({
+      type: 'hook_received',
+      summary: `${source}:${event} captured ${input.trim().length} chars from agent/user turn`,
+      score: 0.5,
+      signals
+    })
+  ];
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0.5));
+}
+
 async function prepareAdvisor(input: string, state: EvolutionState, context: AdvisorContext) {
   const seedSignal = extractSignals(input);
   const signalExtraction = await extractSignalsWithEvoMapLlm(input, seedSignal);
   const signal = signalExtraction.merged;
-  const policyDecision = selectBehaviorGeneDecision(state, signal);
+  const baseDecision = selectBehaviorGeneDecision(state, signal);
+  const { decision: policyDecision, insight: trainedModelInsight } = await enhanceDecisionWithTrainedModels({
+    rawInput: input,
+    state,
+    signal,
+    decision: baseDecision
+  });
   const gene = policyDecision.selectedGene;
   const predictedSatisfaction = policyDecision.predictedYesness;
   const advisorPrompt = buildAdvisorPrompt({
     context,
     signal,
     gene,
-    predictedSatisfaction
+    predictedSatisfaction,
+    trainedModelInsight
   });
 
-  return { signalExtraction, signal, policyDecision, gene, predictedSatisfaction, advisorPrompt };
+  return { signalExtraction, signal, policyDecision, trainedModelInsight, gene, predictedSatisfaction, advisorPrompt };
 }
 
 function buildAdvisorPrompt(input: {
@@ -368,32 +451,136 @@ function buildAdvisorPrompt(input: {
   signal: UserInputSignal;
   gene: EvolutionState['activeGenes'][number];
   predictedSatisfaction: number;
+  trainedModelInsight?: Awaited<ReturnType<typeof enhanceDecisionWithTrainedModels>>['insight'];
 }): string {
-  const { context, signal, gene, predictedSatisfaction } = input;
+  const { context, signal, gene, predictedSatisfaction, trainedModelInsight } = input;
   const semantic = signal.semantic;
-  const strategy = gene.strategy.map((line, index) => `${index + 1}. ${line}`).join('\n');
-  const riskGuard = semantic.permissionMode === 'analysis_only'
-    ? 'Guardrail: stay in analysis mode. Do not edit files, install packages, push, deploy, or run high-impact commands unless the user explicitly changes permission.'
-    : semantic.permissionMode === 'ask_before_editing'
-      ? 'Guardrail: inspect and explain first; ask or verify before file edits, installs, pushes, deploys, or destructive actions.'
-      : semantic.riskLevel === 'high'
-        ? 'Guardrail: high-risk action detected. Prefer a dry run / plan first, then confirm before irreversible execution.'
-        : 'Guardrail: keep the host agent flow unchanged; this advisor is guidance, not a blocking controller.';
+  const yes = dynamicYesContract(gene.id, predictedSatisfaction, semantic.confidence);
+  const geneOverlay = geneBehaviorOverlay(gene.id);
+  const yesPercent = Math.round(predictedSatisfaction * 100);
+  const confidencePercent = Math.round(semantic.confidence * 100);
+  const signals = signal.signals.slice(0, 5).join(',') || 'none';
+  const modelBadge = trainedModelInsight?.loaded ? 'ML:reward+policy+memory' : 'ML:seed';
 
   return [
-    'EvoMate Advisor — read-only sidecar guidance for this turn.',
-    `Host: ${normalizeHookText(context.source, 'manual')} / ${normalizeHookText(context.event, 'advisor_prepare')}`,
-    context.workspace ? `Workspace: ${context.workspace}` : undefined,
-    context.sessionId ? `Session: ${context.sessionId}` : undefined,
-    `Selected Behavior Gene: ${gene.label} (${gene.id})`,
-    `Predicted Yesness: ${Math.round(predictedSatisfaction * 100)}%`,
-    `Semantic: task=${semantic.taskType}; intent=${semantic.intent}; risk=${semantic.riskLevel}; permission=${semantic.permissionMode}; tone=${semantic.userTone}; confidence=${Math.round(semantic.confidence * 100)}%`,
-    `Signals: ${signal.signals.join(', ') || 'none'}`,
-    'Apply these behavior rules:',
-    strategy,
-    riskGuard,
-    'When the user gives feedback, let EvoMate record the outcome so the behavior policy can evolve.'
-  ].filter(Boolean).join('\n');
+    '╭─ EvoMate Dynamic Yes · apply silently to this turn',
+    `│ YES ${yesBar(predictedSatisfaction)} ${yesPercent}% ${yes.band} · ${yes.shortAutonomy}`,
+    `│ MODE ${geneIcon(gene.id)} ${compactText(gene.label, 30)} · ${geneOverlay.shortShape}`,
+    `│ FLOW ${runtimeFlowGlyph()} · hook→semantic→tournament→advisor→GEP`,
+    `│ ACT  ${geneOverlay.actionRule}`,
+    `│ ASK  ${yes.shortClarification}`,
+    `│ TRACE ${normalizeHookText(context.source, 'manual')}/${normalizeHookText(context.event, 'advisor_prepare')} · ${semantic.taskType}/${semantic.intent} · risk:${semantic.riskLevel} · conf:${confidencePercent}% · ${modelBadge}`,
+    `╰─ signals:${signals}`
+  ].join('\n');
+}
+
+function yesBar(value: number): string {
+  const cells = 10;
+  const filled = Math.max(0, Math.min(cells, Math.round(clampScore(value) * cells)));
+  return `${'█'.repeat(filled)}${'░'.repeat(cells - filled)}`;
+}
+
+function runtimeFlowGlyph(): string {
+  return '[■ hook][■ sem][■ vote][■ inject][□ gep][□ train]';
+}
+
+function geneIcon(geneId: string): string {
+  switch (geneId) {
+    case 'gene_ask_before_execution': return '🛡';
+    case 'gene_concise_direct_answer': return '⚡';
+    case 'gene_mcp_first_architecture': return '🧩';
+    case 'gene_deep_research_first': return '🔎';
+    case 'gene_visualize_first': return '◩';
+    case 'gene_yes_engineer_policy': return '🧬';
+    default: return '●';
+  }
+}
+
+function compactText(value: string, maxLength: number): string {
+  const text = value.trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function dynamicYesContract(predictedGeneId: string, predictedSatisfaction: number, semanticConfidence: number) {
+  const yes = clampScore(predictedSatisfaction);
+  const confidence = clampScore(semanticConfidence);
+  const band = yes >= 0.78 ? 'High Yes' : yes >= 0.58 ? 'Guided Yes' : yes >= 0.42 ? 'Cautious Yes' : 'Low Yes / Repair';
+  const autonomy = yes >= 0.78
+    ? 'proceed directly on safe/reversible work; narrate compactly'
+    : yes >= 0.58
+      ? 'advance with a short plan; ask only for meaningful ambiguity'
+      : yes >= 0.42
+        ? 'reduce assumptions; confirm before edits or irreversible actions'
+        : 'repair trust first; ask a focused question or restate intent';
+  const clarification = confidence < 0.5 || yes < 0.45
+    ? 'high — ask one focused question if intent/tool/risk is unclear'
+    : predictedGeneId === 'gene_ask_before_execution'
+      ? 'medium-high — inspect/explain before editing or high-impact commands'
+      : 'low — continue unless blocked by risk or missing credentials';
+  const executionRule = yes >= 0.58
+    ? 'take the next concrete step when safe; otherwise state the exact blocker'
+    : 'avoid premature execution; first align on intent and expected output';
+  const confidenceRule = confidence >= 0.7
+    ? 'trust the selected behavior mode and act decisively'
+    : confidence >= 0.5
+      ? 'follow the selected mode but keep assumptions explicit'
+      : 'treat the semantic parse as weak; infer from the user message and verify if needed';
+
+  const shortAutonomy = yes >= 0.78
+    ? 'act directly when safe'
+    : yes >= 0.58
+      ? 'short plan → act'
+      : yes >= 0.42
+        ? 'confirm before risky edits'
+        : 'repair trust first';
+  const shortClarification = confidence < 0.5 || yes < 0.45
+    ? 'ask 1 focused question if unclear'
+    : predictedGeneId === 'gene_ask_before_execution'
+      ? 'verify before edits/high-impact commands'
+      : 'do not ask unless blocked';
+
+  return { band, autonomy, clarification, executionRule, confidenceRule, shortAutonomy, shortClarification };
+}
+
+function geneBehaviorOverlay(geneId: string): { shortShape: string; actionRule: string } {
+  switch (geneId) {
+    case 'gene_ask_before_execution':
+      return {
+        shortShape: 'analysis-first',
+        actionRule: 'inspect/read-only first; verify before writes'
+      };
+    case 'gene_concise_direct_answer':
+      return {
+        shortShape: 'fast-direct',
+        actionRule: 'give next concrete action; minimize theory'
+      };
+    case 'gene_mcp_first_architecture':
+      return {
+        shortShape: 'architecture-first',
+        actionRule: 'map MCP/EvoMap layers before code details'
+      };
+    case 'gene_deep_research_first':
+      return {
+        shortShape: 'research-first',
+        actionRule: 'verify sources; separate fact/inference'
+      };
+    case 'gene_visualize_first':
+      return {
+        shortShape: 'visual-first',
+        actionRule: 'diagram/state view before dense prose'
+      };
+    case 'gene_yes_engineer_policy':
+      return {
+        shortShape: 'evolution-first',
+        actionRule: 'route via policy/reward/memory/GEP updates'
+      };
+    default:
+      return {
+        shortShape: 'direct-with-assumptions',
+        actionRule: 'use safest available tool path'
+      };
+  }
 }
 
 function normalizeAgentEvent(input: AgentEventInput): AgentEventInput {

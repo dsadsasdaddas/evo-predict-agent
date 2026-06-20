@@ -54,11 +54,67 @@ For each gene:
 score = feature_vector · gene_weights + gene_prior + exploration_bonus
 ```
 
+## Gene Tournament Selection
+
+Final behavior selection now uses a **weighted Condorcet / Tournament** method instead of plain top-score selection.
+
+For every pair of candidate Behavior Genes, EvoMate runs a head-to-head match:
+
+```text
+Safe Yes vs Fast Yes
+Safe Yes vs Architect Yes
+Policy Yes vs Visual Yes
+...
+```
+
+Each evolution lane acts as a voter:
+
+| Voter | Signal | Vote weight |
+| --- | --- | --- |
+| Online Bandit | recent feedback + current feature weights | 0.30 |
+| Reward Model | trained pairwise user preference score | 0.35 |
+| Policy Model | trained context -> gene probability | 0.20 |
+| Memory Similarity | similar historical accepted cases | 0.15 |
+
+Pairwise rule:
+
+```text
+For gene A vs gene B:
+  each voter prefers the gene with the higher lane score
+  weighted votes are summed
+  the winner gets one tournament win
+```
+
+Winner rule:
+
+```text
+1. If one gene beats every other gene head-to-head, it is the Condorcet winner.
+2. If no full Condorcet winner exists, use Copeland ranking:
+   wins -> vote margin -> weighted blend score.
+```
+
+This makes the final decision more explainable than a single average:
+
+```text
+The selected gene won the behavior election, not just a score sort.
+```
+
+Runtime response includes:
+
+```text
+trainedModelInsight.tournament.method
+trainedModelInsight.tournament.rounds
+trainedModelInsight.tournament.standings
+trainedModelInsight.scores[].tournamentWins
+trainedModelInsight.scores[].tournamentMargin
+```
+
 The API returns:
 
 - selected gene
 - feature vector
 - all gene scores
+- gene tournament standings
 - predicted Yesness
 - explanation
 
@@ -114,6 +170,8 @@ Code:
 ```text
 packages/evomate-core/src/ml.ts
 packages/evomate-core/src/index.ts
+apps/api/src/trained-models.ts
+evo_predict_agent/training/*
 ```
 
 State:
@@ -140,21 +198,27 @@ evomate_predict_satisfaction
 
 ## Cloud Compute Decision
 
-Current bandit model does not need cloud GPU. It runs on CPU and updates online per feedback event.
+Current online bandit does not need cloud GPU. It runs on CPU and updates online per feedback event.
 
 Use cloud/remote server for:
 
 - always-on API/frontend demo
 - storing shared team evolution state
-- running heavier future experiments
+- running heavier evolution experiments
+- training preference reward / behavior policy / memory index artifacts
 - deploying EvoMap remote mode
 
-Use GPU only later if we add:
+Current implemented remote/local training path:
 
-- embedding model fine-tuning
-- preference model training
-- simulated user training gym at scale
-- offline RL / AutoML search
+```text
+preference_train
+  -> pairwise reward model
+  -> behavior policy model
+  -> user memory embedding index
+  -> Gene Tournament runtime selection
+```
+
+GPU becomes useful when upgrading these lightweight models to Transformer reward models, FAISS-scale memory, simulated users, or offline RL / AutoML search.
 
 ## EvoMap LLM Signal Extractor
 
