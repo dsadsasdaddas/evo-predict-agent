@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-ARG NEXT_PUBLIC_EVOMATE_API_URL=http://100.70.188.115:8878
+ARG NEXT_PUBLIC_EVOMATE_API_URL=https://evomate-api-3mkana4zma-df.a.run.app
 
 ENV NODE_ENV=production \
     NEXT_PUBLIC_EVOMATE_API_URL=${NEXT_PUBLIC_EVOMATE_API_URL} \

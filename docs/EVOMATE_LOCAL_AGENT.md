@@ -12,7 +12,7 @@ low-risk workflow events to the EvoMate Hook Protocol:
 Default API:
 
 ```txt
-http://100.70.188.115:8878/api/hook-events
+https://evomate-api-3mkana4zma-df.a.run.app/api/hook-events
 ```
 
 ## One-shot test
@@ -73,6 +73,6 @@ source /Users/wangyue/evo/evo-predict-agent/apps/local-agent/shell/evomate-zsh-h
 
 1. User works in Gemini / Codex / Terminal.
 2. Local Agent converts actions into `evomate.hook.v1` events.
-3. SSH-hosted EvoMate API writes them into the evolution timeline.
+3. Cloud Run API writes them into the evolution timeline.
 4. Dashboard flashes and shows Local Activity.
 5. Failed terminal commands become feedback signals, changing behavior-gene selection.

@@ -8,14 +8,14 @@ import type {
   TrainResponse
 } from './types';
 
-export const HOSTED_API_URL = 'http://100.70.188.115:8878';
+export const CLOUD_API_URL = 'https://evomate-api-3mkana4zma-df.a.run.app';
 export const LOCAL_API_URL = 'http://127.0.0.1:8787';
 export const API_URL = process.env.NEXT_PUBLIC_EVOMATE_API_URL || LOCAL_API_URL;
 
 type RequestOptions = RequestInit & { timeoutMs?: number };
 
 export function getApiCandidates() {
-  return Array.from(new Set([API_URL, HOSTED_API_URL]));
+  return Array.from(new Set([API_URL, CLOUD_API_URL]));
 }
 
 async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {

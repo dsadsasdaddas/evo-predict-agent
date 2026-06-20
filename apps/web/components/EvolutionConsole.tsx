@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { API_URL, HOSTED_API_URL, fetchEvolutionHistory, fetchEvolutionState, fetchMemoryRoute, queueTraining, sendFeedback } from '@/lib/evomate-api';
+import { API_URL, CLOUD_API_URL, fetchEvolutionHistory, fetchEvolutionState, fetchMemoryRoute, queueTraining, sendFeedback } from '@/lib/evomate-api';
 import type {
   EvolutionHistory,
   EvolutionState,
@@ -1341,9 +1341,7 @@ function trainingSubtitle(receipt: TrainResponse | null, fallback?: string) {
 }
 
 function apiLabel() {
-  if (API_URL.includes('127.0.0.1') || API_URL.includes('localhost')) return 'Local API';
-  if (API_URL === HOSTED_API_URL) return 'Server API';
-  return `Custom API · ${safeHost(API_URL) || 'configured'}`;
+  return API_URL.includes('run.app') ? 'Cloud API' : `Local→Cloud ${new URL(CLOUD_API_URL).host.split('.')[0]}`;
 }
 
 function compactType(type: string) {
