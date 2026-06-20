@@ -31,6 +31,8 @@ type SourceMode = 'api' | 'demo';
 
 type ShellMode = 'web' | 'electron' | 'codex';
 
+type Lang = 'en' | 'zh';
+
 type AnalyzeResult = {
   geneId: string;
   yesness: number;
@@ -128,6 +130,46 @@ type EvolutionState = {
 const API_URL = process.env.NEXT_PUBLIC_EVOMATE_API_URL || 'http://localhost:8787';
 const starterEvent = 'Codex session: 用户让我看这个仓库，强调“先别乱动代码”，目标是接入 EvoMap/GEP 和机器学习。';
 
+function tx(lang: Lang, en: string, zh: string) {
+  return lang === 'zh' ? zh : en;
+}
+
+function geneCopy(gene: GeneTuple, lang: Lang) {
+  const zhCopy: Record<string, { body: string; mode: string; inject: string }> = {
+    gene_ask_before_execution: {
+      body: '先分析、确认权限，再允许 Codex/Claude Code 执行高风险动作。',
+      mode: '谨慎执行',
+      inject: '注入：先分析，不要在明确授权前编辑文件。'
+    },
+    gene_concise_direct_answer: {
+      body: '用户要快速推进时，压缩解释，直接给出下一步和可执行动作。',
+      mode: '低摩擦推进',
+      inject: '注入：用简洁、执行优先的要点回答。'
+    },
+    gene_mcp_first_architecture: {
+      body: '把 MCP、EvoMap 和 worker 分层讲清楚，再让执行工具按架构落地。',
+      mode: '系统架构',
+      inject: '注入：先展示架构，再进入实现。'
+    },
+    gene_deep_research_first: {
+      body: '遇到外部产品或不确定事实时，先查证，再给结论。',
+      mode: '证据优先',
+      inject: '注入：先验证来源，再做判断。'
+    },
+    gene_visualize_first: {
+      body: '路演、架构和复杂系统优先可视化，让进化过程一眼可懂。',
+      mode: '可视化解释',
+      inject: '注入：优先产出图示或仪表盘。'
+    },
+    gene_yes_engineer_policy: {
+      body: '根据反馈在线学习这个用户的协作偏好，并写成 GEP 资产。',
+      mode: '自适应行为',
+      inject: '注入：通过策略引擎选择行为。'
+    }
+  };
+  return lang === 'zh' ? zhCopy[gene[1]] ?? { body: gene[3], mode: gene[4], inject: gene[5] } : { body: gene[3], mode: gene[4], inject: gene[5] };
+}
+
 const genes: GeneTuple[] = [
   ['Safe Yes', 'gene_ask_before_execution', 0.86, '先分析、确认权限，再允许 Codex/Claude Code 执行高风险动作。', 'Guarded execution', 'Inject: analyze first, no file edits until explicit confirmation.'],
   ['Fast Yes', 'gene_concise_direct_answer', 0.78, '用户要快速推进时，压缩解释，直接给下一步和可执行操作。', 'Low-friction progress', 'Inject: answer in concise execution-first bullets.'],
@@ -169,7 +211,20 @@ const defaultAssets: GepAsset[] = [
   { type: 'Capsule', id: 'waiting_for_3_successful_rewards' }
 ];
 
+const defaultTimelineEn = [
+  'Codex session observed: user requested read-only repo analysis.',
+  'Policy selected Safe Yes before agent execution.',
+  'Next feedback will write Mutation + EvolutionEvent into GEP.'
+];
+
+const defaultTimelineZh = [
+  '已观察到 Codex 会话：用户要求只读分析仓库。',
+  '策略在 Agent 执行前选择了 Safe Yes。',
+  '下一次反馈会写入 Mutation + EvolutionEvent 到 GEP。'
+];
+
 export default function Page() {
+  const [lang, setLang] = useState<Lang>('zh');
   const [eventText, setEventText] = useState(starterEvent);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -182,17 +237,34 @@ export default function Page() {
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('connecting');
   const [lastLiveEventAt, setLastLiveEventAt] = useState<string | null>(null);
   const [shellMode, setShellMode] = useState<ShellMode>('web');
-  const [timeline, setTimeline] = useState([
-    'Codex session observed: user requested read-only repo analysis.',
-    'Policy selected Safe Yes before agent execution.',
-    'Next feedback will write Mutation + EvolutionEvent into GEP.'
-  ]);
+  const [timeline, setTimeline] = useState(defaultTimelineZh);
   const lastStateStamp = useRef('');
 
   const activeGene = useMemo(() => genes.find((gene) => gene[1] === result.geneId) ?? genes[0], [result.geneId]);
   const delta = result.yesness - result.previousYesness;
   const flowPulseKey = lastLiveEventAt ?? timeline[0] ?? result.geneId;
   const isCodexShell = shellMode === 'codex';
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem('evomate_lang');
+    if (saved === 'en' || saved === 'zh') setLang(saved);
+  }, []);
+
+  useEffect(() => {
+    setTimeline((current) => {
+      const defaults = [...defaultTimelineEn, ...defaultTimelineZh];
+      if (!current.every((item) => defaults.includes(item))) return current;
+      return lang === 'zh' ? defaultTimelineZh : defaultTimelineEn;
+    });
+  }, [lang]);
+
+  function toggleLanguage() {
+    setLang((current) => {
+      const next = current === 'zh' ? 'en' : 'zh';
+      window.localStorage.setItem('evomate_lang', next);
+      return next;
+    });
+  }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -464,14 +536,14 @@ export default function Page() {
     return (
       <main className="min-h-screen overflow-hidden bg-black text-white">
         <SubtleBackground />
-        <TopRail source={result.source} liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} shellMode={shellMode} />
+        <TopRail source={result.source} liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} shellMode={shellMode} lang={lang} onToggleLanguage={toggleLanguage} />
 
         <section className="relative z-10 mx-auto max-w-[860px] px-4 pb-8 pt-4">
-          <CodexReviewHeader liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} />
+          <CodexReviewHeader liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} lang={lang} />
           <div className="mt-4 flex min-w-0 flex-col gap-4">
-            <EvoMapProofHero {...heroProps} />
-            <LiveProofDock {...heroProps} />
-            <RuntimePipeline result={result} activeGene={activeGene} assets={assets} />
+            <EvoMapProofHero {...heroProps} lang={lang} />
+            <LiveProofDock {...heroProps} lang={lang} />
+            <RuntimePipeline result={result} activeGene={activeGene} assets={assets} lang={lang} />
             <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
               <AgentSessionCard
                 eventText={eventText}
@@ -481,12 +553,13 @@ export default function Page() {
                 loading={loading}
                 observeEvent={observeEvent}
                 recordFeedback={recordFeedback}
+                lang={lang}
               />
-              <TimelinePanel timeline={timeline} liveStatus={liveStatus} />
+              <TimelinePanel timeline={timeline} liveStatus={liveStatus} lang={lang} />
             </div>
             <div className="grid min-w-0 gap-4 md:grid-cols-2">
-              <GepAssetStream assets={assets} reward={reward} />
-              <BehaviorControlPanel activeGeneId={result.geneId} />
+              <GepAssetStream assets={assets} reward={reward} lang={lang} />
+              <BehaviorControlPanel activeGeneId={result.geneId} lang={lang} />
             </div>
           </div>
         </section>
@@ -497,7 +570,7 @@ export default function Page() {
   return (
     <main className="min-h-screen overflow-hidden bg-black text-white">
       <SubtleBackground />
-      <TopRail source={result.source} liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} shellMode={shellMode} />
+      <TopRail source={result.source} liveStatus={liveStatus} lastLiveEventAt={lastLiveEventAt} shellMode={shellMode} lang={lang} onToggleLanguage={toggleLanguage} />
 
       <section className="relative z-10 mx-auto max-w-[1480px] px-4 pb-5 pt-4 lg:px-5">
         <div className="grid min-h-[calc(100vh-88px)] min-w-0 gap-4 lg:grid-cols-[244px_minmax(0,1fr)] xl:grid-cols-[244px_minmax(0,1fr)_360px]">
@@ -506,13 +579,15 @@ export default function Page() {
             activeGene={activeGene}
             liveStatus={liveStatus}
             lastLiveEventAt={lastLiveEventAt}
+            lang={lang}
           />
 
           <main className="flex min-w-0 flex-col gap-4">
             <EvoMapProofHero
               {...heroProps}
+              lang={lang}
             />
-            <RuntimePipeline result={result} activeGene={activeGene} assets={assets} />
+            <RuntimePipeline result={result} activeGene={activeGene} assets={assets} lang={lang} />
             <div className="grid min-w-0 gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
               <AgentSessionCard
                 eventText={eventText}
@@ -522,18 +597,20 @@ export default function Page() {
                 loading={loading}
                 observeEvent={observeEvent}
                 recordFeedback={recordFeedback}
+                lang={lang}
               />
-              <TimelinePanel timeline={timeline} liveStatus={liveStatus} />
+              <TimelinePanel timeline={timeline} liveStatus={liveStatus} lang={lang} />
             </div>
           </main>
 
           <aside className="flex min-w-0 flex-col gap-4 lg:col-span-2 xl:col-span-1">
             <LiveProofDock
               {...heroProps}
+              lang={lang}
             />
-            <GepAssetStream assets={assets} reward={reward} />
+            <GepAssetStream assets={assets} reward={reward} lang={lang} />
             <div className="grid min-w-0 gap-4 lg:grid-cols-2 xl:grid-cols-1">
-              <BehaviorControlPanel activeGeneId={result.geneId} />
+              <BehaviorControlPanel activeGeneId={result.geneId} lang={lang} />
               <RemoteComputePanel
                 job={remoteJob}
                 jobs={remoteJobs}
@@ -541,6 +618,7 @@ export default function Page() {
                 onSubmit={submitRemoteJob}
                 onImport={importRemoteArtifacts}
                 onRefresh={refreshRemoteJobs}
+                lang={lang}
               />
             </div>
           </aside>
@@ -554,12 +632,16 @@ function TopRail({
   source,
   liveStatus,
   lastLiveEventAt,
-  shellMode
+  shellMode,
+  lang,
+  onToggleLanguage
 }: {
   source: SourceMode;
   liveStatus: LiveStatus;
   lastLiveEventAt: string | null;
   shellMode: ShellMode;
+  lang: Lang;
+  onToggleLanguage: () => void;
 }) {
   const isElectronShell = shellMode === 'electron';
   const liveCopy = liveStatus === 'live'
@@ -572,6 +654,16 @@ function TopRail({
     : shellMode === 'electron'
       ? 'desktop evolution workbench'
       : 'web control plane';
+  const localizedLiveCopy = liveStatus === 'live'
+    ? `${tx(lang, 'Live polling', '实时轮询')}${lastLiveEventAt ? ` · ${formatClock(lastLiveEventAt)}` : ''}`
+    : liveStatus === 'connecting'
+      ? tx(lang, 'Connecting state feed', '正在连接状态流')
+      : tx(lang, 'State feed offline', '状态流离线');
+  const localizedSubtitle = shellMode === 'codex'
+    ? tx(lang, 'codex review mode', 'Codex 审阅模式')
+    : shellMode === 'electron'
+      ? tx(lang, 'desktop evolution workbench', '桌面进化工作台')
+      : tx(lang, 'web control plane', 'Web 控制台');
 
   return (
     <header className="relative z-20 border-b border-white/[0.07] bg-black/80 backdrop-blur-xl">
@@ -589,12 +681,12 @@ function TopRail({
           </div>
           <div>
             <p className="text-sm font-semibold tracking-[-0.03em]">EvoMate × EvoMap</p>
-            <p className="text-[10px] uppercase tracking-[0.2em] text-white/35">{subtitle}</p>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-white/35">{localizedSubtitle}</p>
           </div>
         </div>
 
         <div className="hidden items-center gap-2 lg:flex">
-          {['Hook', 'MCP', 'Gene', 'Reward', 'GEP'].map((item, index) => (
+          {['Hook', 'MCP', tx(lang, 'Gene', '基因'), tx(lang, 'Reward', '奖励'), 'GEP'].map((item, index) => (
             <div key={item} className="flex items-center gap-2">
               <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/55">{item}</span>
               {index < 4 && <ChevronRight className="h-3.5 w-3.5 text-white/18" />}
@@ -604,15 +696,24 @@ function TopRail({
 
         <div className="flex items-center gap-3">
           <span className={`h-2 w-2 rounded-full ${liveStatus === 'live' ? 'bg-[#83f3b1]' : liveStatus === 'connecting' ? 'bg-[#f7ce6a]' : 'bg-[#ff7d7d]'}`} />
-          <span className="hidden text-sm text-white/55 sm:inline">{liveCopy}</span>
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/45">{source === 'api' ? 'Real State' : 'Demo Seed'}</span>
+          <span className="hidden text-sm text-white/55 sm:inline">{localizedLiveCopy}</span>
+          <span className="hidden rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/45 sm:inline">{source === 'api' ? tx(lang, 'Real State', '真实状态') : tx(lang, 'Demo Seed', '演示种子')}</span>
+          <button
+            type="button"
+            onClick={onToggleLanguage}
+            className="rounded-full border border-[#19e6ff]/25 bg-[#19e6ff]/10 px-3 py-1.5 text-xs font-medium text-[#19e6ff] transition hover:bg-[#19e6ff]/15"
+            aria-label={lang === 'zh' ? '切换到英文' : 'Switch to Chinese'}
+            title={lang === 'zh' ? '切换到英文' : 'Switch to Chinese'}
+          >
+            {lang === 'zh' ? '切换到英文' : 'Switch to Chinese'}
+          </button>
         </div>
       </div>
     </header>
   );
 }
 
-function CodexReviewHeader({ liveStatus, lastLiveEventAt }: { liveStatus: LiveStatus; lastLiveEventAt: string | null }) {
+function CodexReviewHeader({ liveStatus, lastLiveEventAt, lang }: { liveStatus: LiveStatus; lastLiveEventAt: string | null; lang: Lang }) {
   const status = liveStatus === 'live'
     ? `Live · ${lastLiveEventAt ? formatClock(lastLiveEventAt) : 'now'}`
     : liveStatus === 'connecting'
@@ -623,10 +724,10 @@ function CodexReviewHeader({ liveStatus, lastLiveEventAt }: { liveStatus: LiveSt
     <section className="rounded-[24px] border border-[#19e6ff]/14 bg-[#19e6ff]/[0.035] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.24em] text-[#19e6ff]/70">Codex Website Review</p>
-          <h2 className="mt-1 text-xl font-semibold tracking-[-0.05em] text-white">Annotation-friendly layout</h2>
+          <p className="text-[10px] uppercase tracking-[0.24em] text-[#19e6ff]/70">{tx(lang, 'Codex Website Review', 'Codex 网站审阅')}</p>
+          <h2 className="mt-1 text-xl font-semibold tracking-[-0.05em] text-white">{tx(lang, 'Annotation-friendly layout', '适合标注审阅的布局')}</h2>
         </div>
-        <span className={`rounded-full border px-3 py-1.5 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/20 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/20 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{status}</span>
+        <span className={`rounded-full border px-3 py-1.5 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/20 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/20 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{liveStatus === 'live' ? `${tx(lang, 'Live', '实时')} · ${lastLiveEventAt ? formatClock(lastLiveEventAt) : tx(lang, 'now', '现在')}` : liveStatus === 'connecting' ? tx(lang, 'Connecting', '连接中') : tx(lang, 'Offline', '离线')}</span>
       </div>
       <p className="mt-3 text-sm leading-6 text-white/50">
         单列、少文字、模块边界清楚，适合在 Codex 浏览器里逐块标注修改。
@@ -639,27 +740,29 @@ function ElectronSideNav({
   result,
   activeGene,
   liveStatus,
-  lastLiveEventAt
+  lastLiveEventAt,
+  lang
 }: {
   result: AnalyzeResult;
   activeGene: GeneTuple;
   liveStatus: LiveStatus;
   lastLiveEventAt: string | null;
+  lang: Lang;
 }) {
   const navItems = [
-    ['Proof Chain', 'Hook → MCP → GEP', <Network key="proof" />],
-    ['Live Session', 'Codex / Claude', <TerminalSquare key="session" />],
-    ['Behavior Gene', activeGene[0], <GitBranch key="gene" />],
-    ['GEP Ledger', 'Mutation assets', <Layers3 key="gep" />],
-    ['Evolution Lab', 'Remote training', <CircuitBoard key="lab" />]
+    [tx(lang, 'Proof Chain', '证明链路'), 'Hook → MCP → GEP', <Network key="proof" />],
+    [tx(lang, 'Live Session', '实时会话'), 'Codex / Claude', <TerminalSquare key="session" />],
+    [tx(lang, 'Behavior Gene', '行为基因'), activeGene[0], <GitBranch key="gene" />],
+    [tx(lang, 'GEP Ledger', 'GEP 账本'), tx(lang, 'Mutation assets', '突变资产'), <Layers3 key="gep" />],
+    [tx(lang, 'Evolution Lab', '进化实验室'), tx(lang, 'Remote training', '远程训练'), <CircuitBoard key="lab" />]
   ] as const;
 
   return (
     <aside className="hidden min-w-0 flex-col rounded-[28px] border border-white/[0.08] bg-[#070707]/92 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.35)] lg:flex">
       <div className="rounded-2xl border border-[#19e6ff]/16 bg-[#19e6ff]/[0.045] p-4">
-        <p className="text-[10px] uppercase tracking-[0.22em] text-[#19e6ff]/70">Product Mode</p>
+        <p className="text-[10px] uppercase tracking-[0.22em] text-[#19e6ff]/70">{tx(lang, 'Product Mode', '产品模式')}</p>
         <h2 className="mt-2 text-xl font-semibold leading-tight tracking-[-0.05em] text-white">
-          Electron<br />workbench
+          {tx(lang, 'Electron', 'Electron')}<br />{tx(lang, 'workbench', '工作台')}
         </h2>
         <p className="mt-3 text-xs leading-5 text-white/42">不是网页首页，是本机 Agent 进化驾驶舱。</p>
       </div>
@@ -682,11 +785,11 @@ function ElectronSideNav({
 
       <div className="mt-auto rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-center justify-between">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-white/32">Yesness</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-white/32">{tx(lang, 'Yesness', '满意度')}</p>
           <span className={`h-2 w-2 rounded-full ${liveStatus === 'live' ? 'bg-[#83f3b1]' : 'bg-[#f7ce6a]'}`} />
         </div>
         <p className="mt-2 text-3xl font-semibold tracking-[-0.06em] text-[#19e6ff]">{(result.yesness * 100).toFixed(1)}%</p>
-        <p className="mt-2 truncate text-xs text-white/38">{lastLiveEventAt ? `updated ${formatClock(lastLiveEventAt)}` : 'waiting for live event'}</p>
+        <p className="mt-2 truncate text-xs text-white/38">{lastLiveEventAt ? `${tx(lang, 'updated', '已更新')} ${formatClock(lastLiveEventAt)}` : tx(lang, 'waiting for live event', '等待实时事件')}</p>
       </div>
     </aside>
   );
@@ -701,7 +804,8 @@ function LiveProofDock({
   timeline,
   liveStatus,
   lastLiveEventAt,
-  flowPulseKey
+  flowPulseKey,
+  lang
 }: {
   result: AnalyzeResult;
   activeGene: GeneTuple;
@@ -712,41 +816,42 @@ function LiveProofDock({
   liveStatus: LiveStatus;
   lastLiveEventAt: string | null;
   flowPulseKey: string;
+  lang: Lang;
 }) {
-  const latestEvent = timeline[0] ?? 'Waiting for Codex / Claude Code hook event.';
+  const latestEvent = timeline[0] ?? tx(lang, 'Waiting for Codex / Claude Code hook event.', '等待 Codex / Claude Code Hook 事件。');
   const statusCopy = liveStatus === 'live'
-    ? `live ${lastLiveEventAt ? `· ${formatClock(lastLiveEventAt)}` : ''}`
+    ? `${tx(lang, 'live', '实时')}${lastLiveEventAt ? ` · ${formatClock(lastLiveEventAt)}` : ''}`
     : liveStatus === 'connecting'
-      ? 'connecting'
-      : 'offline';
+      ? tx(lang, 'connecting', '连接中')
+      : tx(lang, 'offline', '离线');
 
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/92 p-4 xl:sticky xl:top-[72px]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.22em] text-white/32">Live proof</p>
-          <h2 className="mt-1 text-lg font-semibold tracking-[-0.04em] text-white">评委证据包</h2>
+          <p className="text-[10px] uppercase tracking-[0.22em] text-white/32">{tx(lang, 'Live proof', '实时证明')}</p>
+          <h2 className="mt-1 text-lg font-semibold tracking-[-0.04em] text-white">{tx(lang, 'Judge evidence pack', '评委证据包')}</h2>
         </div>
         <span className={`rounded-full border px-2.5 py-1 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/20 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/20 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{statusCopy}</span>
       </div>
 
       <div className="mt-4 rounded-2xl border border-[#19e6ff]/16 bg-[#19e6ff]/[0.045] p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">Hook received</p>
+          <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">{tx(lang, 'Hook received', '已收到 Hook')}</p>
           <MiniPulse liveStatus={liveStatus} pulseKey={flowPulseKey} />
         </div>
         <p className="mt-3 line-clamp-2 text-sm leading-6 text-white/62">{latestEvent}</p>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricBox label="MCP Action" value="select_gene" />
-        <MetricBox label="Gene" value={activeGene[0]} tone="mint" />
-        <MetricBox label="Yesness" value={`${(result.yesness * 100).toFixed(1)}%`} />
-        <MetricBox label="Delta" value={`${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`} tone={delta >= 0 ? 'mint' : 'red'} />
+        <MetricBox label={tx(lang, 'MCP Action', 'MCP 动作')} value="select_gene" />
+        <MetricBox label={tx(lang, 'Gene', '基因')} value={activeGene[0]} tone="mint" />
+        <MetricBox label={tx(lang, 'Yesness', '满意度')} value={`${(result.yesness * 100).toFixed(1)}%`} />
+        <MetricBox label={tx(lang, 'Delta', '变化')} value={`${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`} tone={delta >= 0 ? 'mint' : 'red'} />
       </div>
 
       <div className="mt-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-        <p className="text-xs uppercase tracking-[0.22em] text-white/30">GEP write proof</p>
+        <p className="text-xs uppercase tracking-[0.22em] text-white/30">{tx(lang, 'GEP write proof', 'GEP 写入证明')}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           {assets.slice(0, 4).map((asset) => (
             <span key={`${asset.type}_${asset.id}`} className="rounded-full border border-[#83f3b1]/16 bg-[#83f3b1]/[0.06] px-3 py-1.5 text-xs text-[#83f3b1]">{asset.type}</span>
@@ -756,20 +861,20 @@ function LiveProofDock({
 
       <div className="mt-3 grid gap-2">
         <BeforeAfterCard
-          label="Before EvoMate"
+          label={tx(lang, 'Before EvoMate', '接入 EvoMate 前')}
           tone="red"
-          text="直接开干 → 被打断"
+          text={tx(lang, 'Act too early → interrupted', '直接开干 → 被打断')}
         />
         <BeforeAfterCard
-          label="After EvoMate"
+          label={tx(lang, 'After EvoMate', '接入 EvoMate 后')}
           tone="mint"
-          text={`下次执行：${activeGene[0]}`}
+          text={tx(lang, `Next run: ${activeGene[0]}`, `下次执行：${activeGene[0]}`)}
         />
       </div>
 
       <div className="mt-3 rounded-2xl border border-white/[0.08] bg-black/25 p-4">
-        <p className="text-xs uppercase tracking-[0.22em] text-white/30">Reward</p>
-        <p className={`mt-2 text-xl font-semibold ${reward && reward.value < 0 ? 'text-[#ff7d7d]' : 'text-[#83f3b1]'}`}>{reward ? formatReward(reward.value) : 'pending'}</p>
+        <p className="text-xs uppercase tracking-[0.22em] text-white/30">{tx(lang, 'Reward', '奖励')}</p>
+        <p className={`mt-2 text-xl font-semibold ${reward && reward.value < 0 ? 'text-[#ff7d7d]' : 'text-[#83f3b1]'}`}>{reward ? formatReward(reward.value) : tx(lang, 'pending', '待反馈')}</p>
       </div>
     </section>
   );
@@ -785,7 +890,8 @@ function EvoMapProofHero({
   timeline,
   liveStatus,
   lastLiveEventAt,
-  flowPulseKey
+  flowPulseKey,
+  lang
 }: {
   result: AnalyzeResult;
   activeGene: GeneTuple;
@@ -796,14 +902,15 @@ function EvoMapProofHero({
   liveStatus: LiveStatus;
   lastLiveEventAt: string | null;
   flowPulseKey: string;
+  lang: Lang;
 }) {
-  const latestEvent = timeline[0] ?? 'Waiting for Codex / Claude Code hook event.';
+  const latestEvent = timeline[0] ?? tx(lang, 'Waiting for Codex / Claude Code hook event.', '等待 Codex / Claude Code Hook 事件。');
   const nonCapsuleAssets = assets.filter((asset) => asset.type !== 'Capsule');
   const statusCopy = liveStatus === 'live'
-    ? `live state ${lastLiveEventAt ? `· ${formatClock(lastLiveEventAt)}` : ''}`
+    ? `${tx(lang, 'live state', '实时状态')}${lastLiveEventAt ? ` · ${formatClock(lastLiveEventAt)}` : ''}`
     : liveStatus === 'connecting'
-      ? 'connecting to local state'
-      : 'offline fallback';
+      ? tx(lang, 'connecting to local state', '正在连接本地状态')
+      : tx(lang, 'offline fallback', '离线降级');
 
   const proofStages: FlowStage[] = [
     {
@@ -823,14 +930,14 @@ function EvoMapProofHero({
     {
       icon: <GitBranch />,
       label: '03',
-      title: 'Gene',
+      title: tx(lang, 'Gene', '基因'),
       detail: activeGene[0],
       tone: 'mint'
     },
     {
       icon: <ThumbsUp />,
       label: '04',
-      title: 'Reward',
+      title: tx(lang, 'Reward', '奖励'),
       detail: reward ? formatReward(reward.value) : `${(result.yesness * 100).toFixed(0)}%`,
       tone: reward && reward.value < 0 ? 'red' : 'mint'
     },
@@ -844,8 +951,8 @@ function EvoMapProofHero({
     {
       icon: <Zap />,
       label: '06',
-      title: 'Next',
-      detail: 'behavior update',
+      title: tx(lang, 'Next', '下一步'),
+      detail: tx(lang, 'behavior update', '行为更新'),
       tone: 'mint'
     }
   ];
@@ -861,14 +968,14 @@ function EvoMapProofHero({
       <div className="relative z-10 min-w-0">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-[#19e6ff]/25 bg-[#19e6ff]/10 px-3 py-1.5 text-xs text-[#19e6ff]">EvoMap Integration Proof</span>
+            <span className="rounded-full border border-[#19e6ff]/25 bg-[#19e6ff]/10 px-3 py-1.5 text-xs text-[#19e6ff]">{tx(lang, 'EvoMap Integration Proof', 'EvoMap 集成证明')}</span>
             <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-white/45">Hook → MCP → GEP → Evolution</span>
             <span className={`rounded-full border px-3 py-1.5 text-xs ${liveStatus === 'live' ? 'border-[#83f3b1]/25 bg-[#83f3b1]/10 text-[#83f3b1]' : 'border-[#f7ce6a]/25 bg-[#f7ce6a]/10 text-[#f7ce6a]'}`}>{statusCopy}</span>
           </div>
 
           <h1 className="mt-5 max-w-4xl text-[34px] font-semibold leading-[0.92] tracking-[-0.08em] text-white sm:text-[46px] xl:text-[54px]">
-            EvoMap-native<br />
-            <span className="text-[#19e6ff]">self-evolving agent layer.</span>
+            {tx(lang, 'EvoMap-native', 'EvoMap 原生')}<br />
+            <span className="text-[#19e6ff]">{tx(lang, 'self-evolving agent layer.', '自进化 Agent 层。')}</span>
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-white/50 lg:text-base">
             Hook 收到真实 Agent 消息后，EvoMate 把它变成一次可追踪的 EvoMap 进化流。
@@ -881,8 +988,8 @@ function EvoMapProofHero({
           />
 
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            <MetricBox label="Selected Gene" value={activeGene[0]} tone="mint" />
-            <MetricBox label="Yesness" value={`${(result.yesness * 100).toFixed(1)}%`} />
+            <MetricBox label={tx(lang, 'Selected Gene', '已选基因')} value={activeGene[0]} tone="mint" />
+            <MetricBox label={tx(lang, 'Yesness', '满意度')} value={`${(result.yesness * 100).toFixed(1)}%`} />
             <MetricBox label="GEP" value={assets.map((asset) => asset.type).slice(0, 2).join(' + ') || 'pending'} tone="mint" />
           </div>
         </div>
@@ -978,7 +1085,8 @@ function AgentSessionCard({
   copyEvent,
   loading,
   observeEvent,
-  recordFeedback
+  recordFeedback,
+  lang
 }: {
   eventText: string;
   setEventText: (value: string) => void;
@@ -987,14 +1095,15 @@ function AgentSessionCard({
   loading: boolean;
   observeEvent: () => void;
   recordFeedback: (kind: 'accepted' | 'corrected' | 'interrupted') => void;
+  lang: Lang;
 }) {
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-4">
-      <PanelHeader icon={<TerminalSquare />} title="Live Agent Session" subtitle="observer mode" />
+      <PanelHeader icon={<TerminalSquare />} title={tx(lang, 'Live Agent Session', '实时 Agent 会话')} subtitle={tx(lang, 'observer mode', '观察者模式')} />
       <div className="mt-4 grid gap-2">
-        <SessionRow label="Source" value="Codex CLI" status="observed" />
+        <SessionRow label={tx(lang, 'Source', '来源')} value="Codex CLI" status={tx(lang, 'observed', '已观察')} />
       </div>
-      <label className="mt-4 block text-xs uppercase tracking-[0.22em] text-white/32">Paste event</label>
+      <label className="mt-4 block text-xs uppercase tracking-[0.22em] text-white/32">{tx(lang, 'Paste event', '粘贴事件')}</label>
       <textarea
         value={eventText}
         onChange={(event) => setEventText(event.target.value)}
@@ -1007,7 +1116,7 @@ function AgentSessionCard({
           className="flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-medium text-black transition hover:bg-white/90"
         >
           {loading ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <RadioTower className="h-4 w-4" />}
-          Observe Event
+          {tx(lang, 'Observe Event', '观察事件')}
         </button>
         <button
           type="button"
@@ -1018,9 +1127,9 @@ function AgentSessionCard({
         </button>
       </div>
       <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-        <FeedbackButton icon={<ThumbsUp />} label="Accepted" tone="mint" onClick={() => recordFeedback('accepted')} />
-        <FeedbackButton icon={<ThumbsDown />} label="Corrected" tone="gray" onClick={() => recordFeedback('corrected')} />
-        <FeedbackButton icon={<ShieldCheck />} label="Interrupted" tone="red" onClick={() => recordFeedback('interrupted')} />
+        <FeedbackButton icon={<ThumbsUp />} label={tx(lang, 'Accepted', '接受')} tone="mint" onClick={() => recordFeedback('accepted')} />
+        <FeedbackButton icon={<ThumbsDown />} label={tx(lang, 'Corrected', '纠正')} tone="gray" onClick={() => recordFeedback('corrected')} />
+        <FeedbackButton icon={<ShieldCheck />} label={tx(lang, 'Interrupted', '打断')} tone="red" onClick={() => recordFeedback('interrupted')} />
       </div>
     </section>
   );
@@ -1087,17 +1196,17 @@ function HeroPanel({ result, activeGene, reward, delta }: { result: AnalyzeResul
   );
 }
 
-function RuntimePipeline({ result, activeGene, assets }: { result: AnalyzeResult; activeGene: GeneTuple; assets: GepAsset[] }) {
+function RuntimePipeline({ result, activeGene, assets, lang }: { result: AnalyzeResult; activeGene: GeneTuple; assets: GepAsset[]; lang: Lang }) {
   const steps = [
-    { icon: <Bot />, label: 'Agent', value: 'Codex / Claude' },
-    { icon: <Cpu />, label: 'Policy', value: activeGene[0] },
-    { icon: <PlugZap />, label: 'Inject', value: 'Next run' },
-    { icon: <ClipboardList />, label: 'GEP', value: `${assets.filter((asset) => asset.type !== 'Capsule').length} assets` }
+    { icon: <Bot />, label: tx(lang, 'Agent', 'Agent'), value: 'Codex / Claude' },
+    { icon: <Cpu />, label: tx(lang, 'Policy', '策略'), value: activeGene[0] },
+    { icon: <PlugZap />, label: tx(lang, 'Inject', '注入'), value: tx(lang, 'Next run', '下一轮') },
+    { icon: <ClipboardList />, label: 'GEP', value: tx(lang, `${assets.filter((asset) => asset.type !== 'Capsule').length} assets`, `${assets.filter((asset) => asset.type !== 'Capsule').length} 个资产`) }
   ];
 
   return (
     <section className="min-w-0 rounded-[24px] border border-white/[0.08] bg-[#070707]/90 p-4">
-      <PanelHeader icon={<Network />} title="Runtime" subtitle="compact proof" />
+      <PanelHeader icon={<Network />} title={tx(lang, 'Runtime', '运行时')} subtitle={tx(lang, 'compact proof', '紧凑证明')} />
       <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {steps.map((step, index) => (
           <div key={step.label} className="relative flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3">
@@ -1114,7 +1223,7 @@ function RuntimePipeline({ result, activeGene, assets }: { result: AnalyzeResult
         <span className="rounded-full border border-[#19e6ff]/16 bg-[#19e6ff]/10 px-3 py-1 text-xs text-[#19e6ff]">{result.semantic.intent}</span>
         <span className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1 text-xs text-white/50">{result.semantic.permissionMode}</span>
         <span className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1 text-xs text-white/50">{result.riskLevel}</span>
-        <span className="rounded-full border border-[#83f3b1]/16 bg-[#83f3b1]/10 px-3 py-1 text-xs text-[#83f3b1]">{(result.semantic.confidence * 100).toFixed(0)}% parsed</span>
+        <span className="rounded-full border border-[#83f3b1]/16 bg-[#83f3b1]/10 px-3 py-1 text-xs text-[#83f3b1]">{tx(lang, `${(result.semantic.confidence * 100).toFixed(0)}% parsed`, `解析置信度 ${(result.semantic.confidence * 100).toFixed(0)}%`)}</span>
       </div>
     </section>
   );
@@ -1129,26 +1238,28 @@ function SemanticRoute({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BehaviorControlPanel({ activeGeneId }: { activeGeneId: string }) {
+function BehaviorControlPanel({ activeGeneId, lang }: { activeGeneId: string; lang: Lang }) {
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-4">
-      <PanelHeader icon={<GitBranch />} title="Behavior Control" subtitle="advisor policy" />
+      <PanelHeader icon={<GitBranch />} title={tx(lang, 'Behavior Control', '行为控制')} subtitle={tx(lang, 'advisor policy', 'Advisor 策略')} />
       <div className="mt-4 space-y-2">
-        {genes.map(([label, id, score, body, mode]) => {
+        {genes.map((gene) => {
+          const [label, id, score, body, mode] = gene;
           const active = id === activeGeneId;
+          const copy = geneCopy(gene, lang);
           return (
             <div key={id} className={`rounded-2xl border p-3 ${active ? 'border-[#83f3b1]/25 bg-[#83f3b1]/[0.065]' : 'border-white/[0.08] bg-white/[0.025]'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-white">{label}</p>
-                  <p className="mt-1 truncate text-xs text-white/35">{mode}</p>
+                  <p className="mt-1 truncate text-xs text-white/35">{lang === 'zh' ? copy.mode : mode}</p>
                 </div>
                 <p className={active ? 'text-[#83f3b1]' : 'text-white/48'}>{(score * 100).toFixed(0)}%</p>
               </div>
               <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.07]">
                 <motion.div initial={{ width: 0 }} animate={{ width: `${score * 100}%` }} className="h-full rounded-full bg-gradient-to-r from-[#19e6ff] to-[#83f3b1]" />
               </div>
-              {active && <p className="mt-2 line-clamp-1 text-xs leading-5 text-white/42">{body}</p>}
+              {active && <p className="mt-2 line-clamp-1 text-xs leading-5 text-white/42">{lang === 'zh' ? copy.body : body}</p>}
             </div>
           );
         })}
@@ -1157,10 +1268,10 @@ function BehaviorControlPanel({ activeGeneId }: { activeGeneId: string }) {
   );
 }
 
-function GepAssetStream({ assets, reward }: { assets: GepAsset[]; reward: RewardResult | null }) {
+function GepAssetStream({ assets, reward, lang }: { assets: GepAsset[]; reward: RewardResult | null; lang: Lang }) {
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
-      <PanelHeader icon={<Layers3 />} title="GEP Asset Stream" subtitle="evomap ledger" />
+      <PanelHeader icon={<Layers3 />} title={tx(lang, 'GEP Asset Stream', 'GEP 资产流')} subtitle={tx(lang, 'evomap ledger', 'EvoMap 账本')} />
       <div className="mt-5 space-y-3">
         {assets.map((asset) => (
           <div key={`${asset.type}_${asset.id}`} className="min-w-0 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
@@ -1169,13 +1280,13 @@ function GepAssetStream({ assets, reward }: { assets: GepAsset[]; reward: Reward
               <BadgeCheck className={`h-4 w-4 ${asset.asset_id ? 'text-[#83f3b1]' : 'text-white/24'}`} />
             </div>
             <p className="mt-2 truncate text-xs text-white/42">{asset.id}</p>
-            <p className="mt-2 truncate text-xs text-[#19e6ff]/70">{asset.asset_id ?? 'waiting for threshold / feedback'}</p>
+            <p className="mt-2 truncate text-xs text-[#19e6ff]/70">{asset.asset_id ?? tx(lang, 'waiting for threshold / feedback', '等待阈值或反馈')}</p>
           </div>
         ))}
       </div>
       <div className="mt-4 rounded-2xl border border-white/[0.08] bg-black/30 p-4">
-        <p className="text-xs uppercase tracking-[0.22em] text-white/30">Latest reward</p>
-        <p className={`mt-3 text-2xl font-semibold ${reward && reward.value < 0 ? 'text-[#ff7d7d]' : 'text-[#83f3b1]'}`}>{reward ? formatReward(reward.value) : 'pending'}</p>
+        <p className="text-xs uppercase tracking-[0.22em] text-white/30">{tx(lang, 'Latest reward', '最新奖励')}</p>
+        <p className={`mt-3 text-2xl font-semibold ${reward && reward.value < 0 ? 'text-[#ff7d7d]' : 'text-[#83f3b1]'}`}>{reward ? formatReward(reward.value) : tx(lang, 'pending', '待反馈')}</p>
       </div>
     </section>
   );
@@ -1188,7 +1299,8 @@ function RemoteComputePanel({
   loading,
   onSubmit,
   onImport,
-  onRefresh
+  onRefresh,
+  lang
 }: {
   job: RemoteJob | null;
   jobs: RemoteJob[];
@@ -1196,6 +1308,7 @@ function RemoteComputePanel({
   onSubmit: () => void;
   onImport: () => void;
   onRefresh: () => void;
+  lang: Lang;
 }) {
   const active = job ?? jobs[0];
   const statusTone = active?.status === 'imported' || active?.status === 'completed'
@@ -1206,13 +1319,13 @@ function RemoteComputePanel({
 
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-5">
-      <PanelHeader icon={<CircuitBoard />} title="Remote Compute" subtitle="gpu distribution" />
-      <EvolutionGymCompact active={active} loading={loading} />
+      <PanelHeader icon={<CircuitBoard />} title={tx(lang, 'Remote Compute', '远程计算')} subtitle={tx(lang, 'gpu distribution', 'GPU 分发')} />
+      <EvolutionGymCompact active={active} loading={loading} lang={lang} />
 
       <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-        <MetricBox label="Host" value={active?.target?.host || 'configured host'} />
-        <MetricBox label="Mode" value={active?.target?.executeRemote ? 'ssh' : 'dry-run'} />
-        <MetricBox label="Status" value={active?.status || 'ready'} tone={active?.status === 'failed' ? 'red' : 'cyan'} />
+        <MetricBox label={tx(lang, 'Host', '主机')} value={active?.target?.host || tx(lang, 'configured host', '已配置主机')} />
+        <MetricBox label={tx(lang, 'Mode', '模式')} value={active?.target?.executeRemote ? 'ssh' : 'dry-run'} />
+        <MetricBox label={tx(lang, 'Status', '状态')} value={active?.status || tx(lang, 'ready', '就绪')} tone={active?.status === 'failed' ? 'red' : 'cyan'} />
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1222,7 +1335,7 @@ function RemoteComputePanel({
           className="flex items-center justify-center gap-2 rounded-2xl bg-white px-3 py-3 text-xs font-medium text-black transition hover:bg-white/90"
         >
           {loading ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <RadioTower className="h-4 w-4" />}
-          Submit Job
+          {tx(lang, 'Submit Job', '提交任务')}
         </button>
         <button
           type="button"
@@ -1231,7 +1344,7 @@ function RemoteComputePanel({
           className="flex items-center justify-center gap-2 rounded-2xl border border-[#83f3b1]/25 bg-[#83f3b1]/10 px-3 py-3 text-xs font-medium text-[#83f3b1] transition disabled:cursor-not-allowed disabled:opacity-35"
         >
           <BadgeCheck className="h-4 w-4" />
-          Import
+          {tx(lang, 'Import', '导入')}
         </button>
       </div>
       <button
@@ -1240,32 +1353,32 @@ function RemoteComputePanel({
         className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.025] px-3 py-2.5 text-xs text-white/50 transition hover:text-white"
       >
         <RefreshCcw className="h-3.5 w-3.5" />
-        Refresh Queue
+        {tx(lang, 'Refresh Queue', '刷新队列')}
       </button>
 
       <div className="mt-4 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs uppercase tracking-[0.22em] text-white/30">Active job</p>
-            <p className="mt-2 truncate text-sm font-medium text-white">{active?.jobId || 'no job submitted yet'}</p>
+            <p className="text-xs uppercase tracking-[0.22em] text-white/30">{tx(lang, 'Active job', '当前任务')}</p>
+            <p className="mt-2 truncate text-sm font-medium text-white">{active?.jobId || tx(lang, 'no job submitted yet', '尚未提交任务')}</p>
           </div>
-          <p className={`text-sm font-semibold ${statusTone}`}>{active?.status || 'idle'}</p>
+          <p className={`text-sm font-semibold ${statusTone}`}>{formatStatus(active?.status, lang)}</p>
         </div>
-        <p className="mt-3 line-clamp-2 text-sm leading-5 text-white/42">{active?.objective || 'Submit an evolution_gym_eval job to produce policy_eval, ValidationReport, mutations, and EvolutionBundle.'}</p>
+        <p className="mt-3 line-clamp-2 text-sm leading-5 text-white/42">{active?.objective || tx(lang, 'Submit an evolution_gym_eval job to produce policy_eval, ValidationReport, mutations, and EvolutionBundle.', '提交 evolution_gym_eval 任务，生成 policy_eval、ValidationReport、突变和 EvolutionBundle。')}</p>
         <div className="mt-4 space-y-2">
-          <RemoteStep label="Dataset" active={Boolean(active)} />
-          <RemoteStep label="SSH Queue" active={Boolean(active)} />
-          <RemoteStep label="Python Worker" active={active?.status === 'running' || active?.status === 'completed' || active?.status === 'imported'} />
-          <RemoteStep label="GEP Import" active={active?.status === 'imported'} />
+          <RemoteStep label={tx(lang, 'Dataset', '数据集')} active={Boolean(active)} />
+          <RemoteStep label={tx(lang, 'SSH Queue', 'SSH 队列')} active={Boolean(active)} />
+          <RemoteStep label={tx(lang, 'Python Worker', 'Python Worker')} active={active?.status === 'running' || active?.status === 'completed' || active?.status === 'imported'} />
+          <RemoteStep label={tx(lang, 'GEP Import', 'GEP 导入')} active={active?.status === 'imported'} />
         </div>
       </div>
 
       {active?.artifactSummary && (
         <div className="mt-4 rounded-2xl border border-[#83f3b1]/16 bg-[#83f3b1]/[0.045] p-4">
-          <p className="text-xs uppercase tracking-[0.22em] text-[#83f3b1]/70">Imported bundle</p>
+          <p className="text-xs uppercase tracking-[0.22em] text-[#83f3b1]/70">{tx(lang, 'Imported bundle', '已导入 Bundle')}</p>
           <p className="mt-2 truncate text-sm text-white">{active.artifactSummary.evolutionBundleId}</p>
           <p className="mt-2 text-xs text-white/44">
-            score {((active.artifactSummary.validationScore || 0) * 100).toFixed(0)}% · {active.artifactSummary.suggestedMutationCount || 0} mutation(s)
+            {tx(lang, 'score', '得分')} {((active.artifactSummary.validationScore || 0) * 100).toFixed(0)}% · {active.artifactSummary.suggestedMutationCount || 0} {tx(lang, 'mutation(s)', '个突变')}
           </p>
         </div>
       )}
@@ -1273,7 +1386,7 @@ function RemoteComputePanel({
   );
 }
 
-function EvolutionGymCompact({ active, loading }: { active: RemoteJob | undefined; loading: boolean }) {
+function EvolutionGymCompact({ active, loading, lang }: { active: RemoteJob | undefined; loading: boolean; lang: Lang }) {
   const status = active?.status || (loading ? 'running' : 'idle');
   const cells = Array.from({ length: 36 }, (_, index) => index);
   const activeCells = status === 'imported'
@@ -1288,22 +1401,22 @@ function EvolutionGymCompact({ active, loading }: { active: RemoteJob | undefine
             ? 22
             : 9;
   const phase = status === 'imported'
-    ? 'GEP bundle imported'
+    ? tx(lang, 'GEP bundle imported', 'GEP Bundle 已导入')
     : status === 'completed'
-      ? 'validation complete'
+      ? tx(lang, 'validation complete', '验证完成')
       : status === 'running' || loading
-        ? 'simulating users'
+        ? tx(lang, 'simulating users', '模拟用户中')
         : status === 'queued'
-          ? 'queued for worker'
-          : 'ready for gym';
+          ? tx(lang, 'queued for worker', '已进入 worker 队列')
+          : tx(lang, 'ready for gym', '实验室就绪');
   const fitness = status === 'failed' ? 0.22 : active?.artifactSummary?.validationScore ?? (active ? 0.72 : 0.58);
 
   return (
     <div className="mt-5 overflow-hidden rounded-2xl border border-[#19e6ff]/15 bg-[#19e6ff]/[0.035] p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">Evolution Gym</p>
-          <p className="mt-2 text-sm leading-5 text-white/62">Compact simulator: squares are user-behavior scenarios. More light = more mutations survived.</p>
+          <p className="text-xs uppercase tracking-[0.22em] text-[#19e6ff]/70">{tx(lang, 'Evolution Gym', '进化实验室')}</p>
+          <p className="mt-2 text-sm leading-5 text-white/62">{tx(lang, 'Compact simulator: squares are user-behavior scenarios. More light = more mutations survived.', '紧凑模拟器：方块代表用户行为场景。亮起越多，说明更多突变通过验证。')}</p>
         </div>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#19e6ff]/20 bg-black/25 text-[#19e6ff]">
           <CircuitBoard className="h-4 w-4" />
@@ -1356,11 +1469,11 @@ function EvolutionGymCompact({ active, loading }: { active: RemoteJob | undefine
             />
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
-            <MetricBox label="Scenarios" value={String(active ? 128 : 36)} />
-            <MetricBox label="Genes" value="6-way" tone="mint" />
-            <MetricBox label="Fitness" value={`${Math.round(fitness * 100)}%`} tone={fitness > 0.6 ? 'mint' : 'red'} />
+            <MetricBox label={tx(lang, 'Scenarios', '场景')} value={String(active ? 128 : 36)} />
+            <MetricBox label={tx(lang, 'Genes', '基因')} value="6-way" tone="mint" />
+            <MetricBox label={tx(lang, 'Fitness', '适应度')} value={`${Math.round(fitness * 100)}%`} tone={fitness > 0.6 ? 'mint' : 'red'} />
           </div>
-          <p className="mt-3 line-clamp-2 text-xs leading-5 text-white/40">{active?.objective || 'Submit evolution_gym_eval to grow the square field from seed behavior into a validated GEP bundle.'}</p>
+          <p className="mt-3 line-clamp-2 text-xs leading-5 text-white/40">{active?.objective || tx(lang, 'Submit evolution_gym_eval to grow the square field from seed behavior into a validated GEP bundle.', '提交 evolution_gym_eval，让种子行为在方块场中进化成已验证的 GEP Bundle。')}</p>
         </div>
       </div>
     </div>
@@ -1376,16 +1489,16 @@ function RemoteStep({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-function TimelinePanel({ timeline, liveStatus }: { timeline: string[]; liveStatus: LiveStatus }) {
+function TimelinePanel({ timeline, liveStatus, lang }: { timeline: string[]; liveStatus: LiveStatus; lang: Lang }) {
   const subtitle = liveStatus === 'live'
-    ? 'live hook feed'
+    ? tx(lang, 'live hook feed', '实时 Hook 流')
     : liveStatus === 'connecting'
-      ? 'connecting'
-      : 'offline cache';
+      ? tx(lang, 'connecting', '连接中')
+      : tx(lang, 'offline cache', '离线缓存');
 
   return (
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#070707]/90 p-4">
-      <PanelHeader icon={<Activity />} title="Evolution Timeline" subtitle={subtitle} />
+      <PanelHeader icon={<Activity />} title={tx(lang, 'Evolution Timeline', '进化时间线')} subtitle={subtitle} />
       <div className="mt-4 space-y-2">
         {timeline.slice(0, 4).map((event, index) => (
           <div key={`${event}_${index}`} className="min-w-0 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3">
@@ -1633,6 +1746,21 @@ function inferIntentFromTimeline(item: EvolutionTimelineItem | undefined, fallba
 
 function formatReward(value: number) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}`;
+}
+
+function formatStatus(status: string | undefined, lang: Lang) {
+  if (lang === 'en') return status || 'idle';
+  const zh: Record<string, string> = {
+    idle: '空闲',
+    ready: '就绪',
+    queued: '已排队',
+    running: '运行中',
+    completed: '已完成',
+    imported: '已导入',
+    failed: '失败',
+    syncing: '同步中'
+  };
+  return zh[status || 'idle'] ?? status ?? '空闲';
 }
 
 function clamp(value: number, min: number, max: number) {
