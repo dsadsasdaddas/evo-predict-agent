@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { EvoMateHookClient, type EvoMateHookEvent } from '@evomate/hooks';
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_API_URL = 'https://evomate-api-3mkana4zma-df.a.run.app';
+const DEFAULT_API_URL = 'http://100.70.188.115:8878';
 const DEFAULT_INTERVAL_MS = 2500;
 const DEFAULT_GIT_INTERVAL_MS = 5000;
 

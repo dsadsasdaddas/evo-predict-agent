@@ -1,5 +1,5 @@
 const PROTOCOL_VERSION = 'evomate.hook.v1';
-const DEFAULT_API_URL = 'https://evomate-api-3mkana4zma-df.a.run.app/api/hook-events';
+const DEFAULT_API_URL = 'http://100.70.188.115:8878/api/hook-events';
 const MAX_RECENT = 24;
 
 const defaultConfig = {

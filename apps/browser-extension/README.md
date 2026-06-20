@@ -27,7 +27,7 @@ Chrome Manifest V3 extension that turns AI web chat pages into EvoMate Hook Prot
 ```text
 Open ChatGPT / Gemini / Claude Web
 → ask a question
-→ EvoMate asks Cloud Run for evolved advisor guidance
+→ EvoMate asks the hosted server for evolved advisor guidance
 → extension injects the advisor block into the normal AI prompt
 → AI answers with the evolved behavior policy
 → copy/regenerate/stop/feedback buttons become outcome hooks
@@ -38,7 +38,7 @@ Open ChatGPT / Gemini / Claude Web
 Default API endpoint:
 
 ```text
-https://evomate-api-3mkana4zma-df.a.run.app/api/hook-events
+http://100.70.188.115:8878/api/hook-events
 ```
 
 For local backend, open the extension popup and set:

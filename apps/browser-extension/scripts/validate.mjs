@@ -11,7 +11,7 @@ const errors = [];
 if (manifest.manifest_version !== 3) errors.push('manifest_version must be 3');
 if (!manifest.background?.service_worker) errors.push('background.service_worker required');
 if (!Array.isArray(manifest.content_scripts) || manifest.content_scripts.length === 0) errors.push('content_scripts required');
-if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.some((host) => host.includes('evomate-api'))) errors.push('Cloud Run host permission missing');
+if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.some((host) => host.includes('100.70.188.115:8878'))) errors.push('hosted server permission missing');
 
 const referencedFiles = [
   manifest.background?.service_worker,

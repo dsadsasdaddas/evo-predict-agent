@@ -35,10 +35,10 @@ cd vendor/codex/codex-rs
 cargo build -p codex-cli --bin codex
 ```
 
-## Run with EvoMate cloud hook
+## Run with EvoMate hosted hook
 
 ```bash
-EVOMATE_API_URL=https://evomate-api-3mkana4zma-df.a.run.app \
+EVOMATE_API_URL=http://100.70.188.115:8878 \
   vendor/codex/codex-rs/target/debug/codex
 ```
 
@@ -48,7 +48,7 @@ For local development, the helper wrapper on the demo machine is:
 /Users/wangyue/.local/bin/evocodex
 ```
 
-It launches the modified Codex binary with `EVOMATE_API_URL` pointing to the shared Cloud Run API, so the phone page can observe the same evolution stream.
+It launches the modified Codex binary with `EVOMATE_API_URL` pointing to the shared SSH-hosted EvoMate API, so the phone page can observe the same evolution stream.
 
 ## Why submodule
 
