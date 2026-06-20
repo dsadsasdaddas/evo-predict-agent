@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">EvoMate Hook</string>
+    <string name="accessibility_service_label">EvoMate AI Chat Hook</string>
+    <string name="accessibility_service_description">Observes supported AI chat screens and uploads EvoMate mobile-chat hook events.</string>
+</resources>

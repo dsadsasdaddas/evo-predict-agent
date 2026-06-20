@@ -25,3 +25,10 @@ dist/
 
 # Claude Code local machine settings
 .claude/settings.local.json
+
+# Android local machine and build artifacts
+apps/android/.gradle/
+apps/android/.idea/
+apps/android/local.properties
+apps/android/build/
+apps/android/app/build/

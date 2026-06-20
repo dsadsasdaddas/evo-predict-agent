@@ -157,3 +157,42 @@ That is the product upgrade:
 from coding-agent hook
   to personal AI evolution protocol
 ```
+
+## Android adapter
+
+The Android companion lives at:
+
+```text
+apps/android
+```
+
+It mirrors the iOS/mobile hook path by emitting `channel: "mobile-chat"` events with
+`device: "android"` and the same `/api/hook-events` upload target. The first implementation uses
+Android Accessibility APIs instead of root/network interception, so it can observe Doubao and other
+AI chat apps without patching those apps.
+
+Default event examples:
+
+```json
+{
+  "protocolVersion": "evomate.hook.v1",
+  "source": "mobile-chat:doubao",
+  "channel": "mobile-chat",
+  "event": "mobile_chat_user",
+  "eventKind": "user_message",
+  "direction": "inbound",
+  "device": "android"
+}
+```
+
+```json
+{
+  "protocolVersion": "evomate.hook.v1",
+  "source": "mobile-chat:doubao",
+  "channel": "mobile-chat",
+  "event": "mobile_chat_assistant",
+  "eventKind": "assistant_message",
+  "direction": "outbound",
+  "device": "android"
+}
+```
