@@ -38,7 +38,7 @@ Open ChatGPT / Gemini / Claude Web
 Default API endpoint:
 
 ```text
-https://evomate-api-3mkana4zma-df.a.run.app/api/hook-events
+https://evomate.yueanlab.com/api/hook-events
 ```
 
 For local backend, open the extension popup and set:

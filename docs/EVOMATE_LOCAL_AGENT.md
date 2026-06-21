@@ -12,7 +12,7 @@ low-risk workflow events to the EvoMate Hook Protocol:
 Default API:
 
 ```txt
-https://evomate-api-3mkana4zma-df.a.run.app/api/hook-events
+https://evomate.yueanlab.com/api/hook-events
 ```
 
 ## One-shot test

@@ -9,7 +9,7 @@ import type {
   TrainResponse
 } from './types';
 
-export const CLOUD_API_URL = 'https://evomate-api-3mkana4zma-df.a.run.app';
+export const CLOUD_API_URL = 'https://evomate.yueanlab.com';
 export const LOCAL_API_URL = 'http://127.0.0.1:8787';
 export const API_URL = process.env.NEXT_PUBLIC_EVOMATE_API_URL || LOCAL_API_URL;
 

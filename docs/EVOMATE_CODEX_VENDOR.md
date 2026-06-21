@@ -38,7 +38,7 @@ cargo build -p codex-cli --bin codex
 ## Run with EvoMate cloud hook
 
 ```bash
-EVOMATE_API_URL=https://evomate-api-3mkana4zma-df.a.run.app \
+EVOMATE_API_URL=https://evomate.yueanlab.com \
   vendor/codex/codex-rs/target/debug/codex
 ```
 

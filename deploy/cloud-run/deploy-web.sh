@@ -5,7 +5,7 @@ PROJECT_ID="${PROJECT_ID:-gen-lang-client-0594452709}"
 REGION="${REGION:-asia-east2}"
 REPOSITORY="${REPOSITORY:-evomate}"
 SERVICE="${SERVICE:-evomate-web}"
-API_URL="${NEXT_PUBLIC_EVOMATE_API_URL:-https://evomate-api-3mkana4zma-df.a.run.app}"
+API_URL="${NEXT_PUBLIC_EVOMATE_API_URL:-https://evomate.yueanlab.com}"
 IMAGE="${IMAGE:-${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}:latest}"
 PYTHON_BIN="${CLOUDSDK_PYTHON:-/opt/homebrew/bin/python3.14}"
 

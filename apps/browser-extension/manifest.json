@@ -5,6 +5,7 @@
   "description": "Auto-observe AI web chats and send evolution signals to EvoMate Hook Protocol.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
+    "https://evomate.yueanlab.com/*",
     "https://evomate-api-3mkana4zma-df.a.run.app/*",
     "http://127.0.0.1:8787/*",
     "http://localhost:8787/*"

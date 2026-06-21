@@ -4,10 +4,10 @@
 #   source /Users/wangyue/evo/evo-predict-agent/apps/local-agent/shell/evomate-zsh-hook.zsh
 #
 # Optional env:
-#   export EVOMATE_API_URL="https://evomate-api-3mkana4zma-df.a.run.app"
+#   export EVOMATE_API_URL="https://evomate.yueanlab.com"
 #   export EVOMATE_TERMINAL_HOOK=1
 
-: "${EVOMATE_API_URL:=https://evomate-api-3mkana4zma-df.a.run.app}"
+: "${EVOMATE_API_URL:=https://evomate.yueanlab.com}"
 : "${EVOMATE_TERMINAL_HOOK:=1}"
 : "${EVOMATE_TERMINAL_TIMEOUT:=1.2}"
 
