@@ -2,6 +2,8 @@ import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 export type HookKind = 'observe' | 'advisor' | 'outcome';
+const DEFAULT_LOCAL_API_URL = 'http://127.0.0.1:8787';
+const DEFAULT_CLOUD_API_URL = 'https://evomate.yueanlab.com';
 const MAX_HOOK_STRING_CHARS = Number(process.env.EVOMATE_HOOK_MAX_STRING_CHARS || 1200);
 const MAX_HOOK_QUEUE_BYTES = Number(process.env.EVOMATE_HOOK_QUEUE_MAX_BYTES || 5 * 1024 * 1024);
 
@@ -127,49 +129,59 @@ export async function appendQueue(kind: HookKind, payload: unknown): Promise<str
 }
 
 export async function postJson<T extends HookResponse>(path: string, payload: unknown): Promise<T> {
-  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://127.0.0.1:8787');
-  const timeoutMs = Number(process.env.EVOMATE_HOOK_TIMEOUT_MS || 900);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    const text = await response.text();
-    const json = text ? JSON.parse(text) as T : {} as T;
-    if (!response.ok) {
-      const error = typeof json.error === 'string' ? json.error : response.statusText;
-      throw new Error(`evomate_api_${response.status}:${error}`);
+  const timeoutMs = Number(process.env.EVOMATE_HOOK_TIMEOUT_MS || 4500);
+  const errors: string[] = [];
+  for (const baseUrl of apiCandidates()) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      const text = await response.text();
+      const json = text ? JSON.parse(text) as T : {} as T;
+      if (!response.ok) {
+        const error = typeof json.error === 'string' ? json.error : response.statusText;
+        throw new Error(`evomate_api_${response.status}:${error}`);
+      }
+      return json;
+    } catch (error) {
+      errors.push(`${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timer);
     }
-    return json;
-  } finally {
-    clearTimeout(timer);
   }
+  throw new Error(`evomate_api_unreachable: ${errors.join(' | ')}`);
 }
 
 export async function getJson<T = unknown>(path: string, timeoutMs = Number(process.env.EVOMATE_HOOK_TIMEOUT_MS || 900)): Promise<T> {
-  const baseUrl = trimSlash(process.env.EVOMATE_API_URL || 'http://127.0.0.1:8787');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method: 'GET',
-      headers: { 'accept': 'application/json' },
-      signal: controller.signal
-    });
-    const text = await response.text();
-    const json = text ? JSON.parse(text) as T : {} as T;
-    if (!response.ok) {
-      const error = isRecord(json) && typeof json.error === 'string' ? json.error : response.statusText;
-      throw new Error(`evomate_api_${response.status}:${error}`);
+  const errors: string[] = [];
+  for (const baseUrl of apiCandidates()) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'GET',
+        headers: { 'accept': 'application/json' },
+        signal: controller.signal
+      });
+      const text = await response.text();
+      const json = text ? JSON.parse(text) as T : {} as T;
+      if (!response.ok) {
+        const error = isRecord(json) && typeof json.error === 'string' ? json.error : response.statusText;
+        throw new Error(`evomate_api_${response.status}:${error}`);
+      }
+      return json;
+    } catch (error) {
+      errors.push(`${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timer);
     }
-    return json;
-  } finally {
-    clearTimeout(timer);
   }
+  throw new Error(`evomate_api_unreachable: ${errors.join(' | ')}`);
 }
 
 export function compactResponse(response: HookResponse, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -243,6 +255,19 @@ function defaultEvent(kind: HookKind): string {
   if (kind === 'advisor') return 'advisor_prepare';
   if (kind === 'outcome') return 'agent_outcome';
   return 'agent_observe';
+}
+
+function apiCandidates(): string[] {
+  return [
+    process.env.EVOMATE_API_URL,
+    process.env.NEXT_PUBLIC_EVOMATE_API_URL,
+    process.env.EVOMATE_CLOUD_API_URL,
+    DEFAULT_LOCAL_API_URL,
+    DEFAULT_CLOUD_API_URL
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map(trimSlash)
+    .filter((value, index, list) => list.indexOf(value) === index);
 }
 
 function toCamel(value: string): string {
