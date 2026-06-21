@@ -50,7 +50,7 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --memory 1Gi \
   --cpu 1 \
-  --min-instances 0 \
+  --min-instances 1 \
   --max-instances 2 \
   --timeout 120 \
   --set-env-vars "NEXT_PUBLIC_EVOMATE_API_URL=${API_URL},EVOMATE_PROJECT_ROOT=/app"

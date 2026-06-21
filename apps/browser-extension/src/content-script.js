@@ -100,7 +100,9 @@
       const hash = hashText([provider, item.role, normalizeTextForHash(text)].join('\n'));
       if (seen.has(hash)) continue;
       seen.add(hash);
-      events.push(toHookEvent(item, text, hash, reason));
+      const event = toHookEvent(item, text, hash, reason);
+      event.route = 'observe';
+      events.push(event);
       if (events.length >= MAX_BATCH) break;
     }
 
@@ -346,6 +348,7 @@
     seen.add(hash);
     persistSeen();
     const event = toHookEvent({ role: 'user', text: clean, selector: describeNode(node) || latestPromptDraft.selector || 'active.prompt.input' }, clean, hash, reason);
+    event.route = 'observe';
     event.metadata.captureMode = 'auto_input';
     event.signals = ['browser_extension', 'web_chat', `provider_${provider}`, 'role_user', 'input_hook'];
     chrome.runtime.sendMessage({ type: 'evomate:hook-events', events: [event] }).then((receipt) => {
