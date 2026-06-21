@@ -39,4 +39,15 @@ assert.equal(batch.events.length, 2);
 assert.equal(batch.events[0].route, 'outcome');
 assert.equal(batch.events[1].route, 'advisor');
 
+const passiveWeb = normalizeHookInput({
+  source: 'browser-extension:gemini',
+  channel: 'browser-extension',
+  eventKind: 'user_message',
+  route: 'observe',
+  content: '这是一条被动监听到的网页端用户消息，应该快速入库，不触发 advisor。'
+});
+assert.equal(passiveWeb.ok, true);
+assert.equal(passiveWeb.events[0].eventKind, 'user_message');
+assert.equal(passiveWeb.events[0].route, 'observe');
+
 console.log('evomate hook protocol validation ok');

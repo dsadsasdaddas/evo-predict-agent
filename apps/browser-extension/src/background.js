@@ -185,6 +185,7 @@ function createHookEvent(event, config) {
     event: event.event || `browser_${event.eventKind || 'message'}`,
     eventKind: event.eventKind || 'assistant_message',
     direction: event.direction || inferDirection(event.eventKind),
+    route: event.route,
     content,
     sessionId: event.sessionId,
     url: event.url,

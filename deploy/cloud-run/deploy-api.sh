@@ -46,8 +46,8 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --memory 1Gi \
   --cpu 1 \
-  --min-instances 0 \
-  --max-instances 2 \
+  --min-instances 1 \
+  --max-instances 1 \
   --timeout 120 \
   --set-env-vars "EVOMAP_LLM_DISABLED=${EVOMAP_LLM_DISABLED},EVOMAP_LLM_BASE_URL=${EVOMAP_LLM_BASE_URL},EVOMAP_LLM_MODEL=${EVOMAP_LLM_MODEL},EVOMAP_LLM_TIMEOUT_MS=${EVOMAP_LLM_TIMEOUT_MS},EVOMATE_PROJECT_ROOT=/app,EVOMATE_STATE_DIR=/tmp/evomate,GEP_ASSETS_DIR=/tmp/evomate-assets,EVOMATE_REMOTE_EXECUTE=0" \
   "${SECRET_ARGS[@]}"

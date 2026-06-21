@@ -51,6 +51,7 @@ export interface EvoMateHookEvent {
   channel?: EvoMateHookChannel | string;
   eventKind?: EvoMateHookEventKind | string;
   direction?: EvoMateHookDirection | string;
+  route?: EvoMateHookRoute | string;
   content?: string;
   messages?: EvoMateHookMessage[];
   sessionId?: string;
@@ -139,7 +140,8 @@ export function normalizeSingleEvent(raw: unknown, index = 0): NormalizedEvoMate
   const metadata = normalizeMetadata(raw);
   const messages = normalizeMessages(readFirst(raw, ['messages', 'conversation', 'turns']));
   const signals = normalizeStringList(readFirst(raw, ['signals', 'signal', 'contextSignals', 'context_signals']));
-  const route = routeHookEvent({ eventKind, direction, content, outcome: stringFrom(raw.outcome), score: numberFrom(raw.score) });
+  const route = normalizeRouteOverride(stringFrom(readFirst(raw, ['route', 'hookRoute', 'hook_route'])))
+    || routeHookEvent({ eventKind, direction, content, outcome: stringFrom(raw.outcome), score: numberFrom(raw.score) });
 
   return {
     protocolVersion: EVOMATE_HOOK_PROTOCOL_VERSION,
@@ -148,6 +150,7 @@ export function normalizeSingleEvent(raw: unknown, index = 0): NormalizedEvoMate
     channel,
     eventKind,
     direction,
+    route,
     content,
     messages,
     sessionId: stringFrom(readFirst(raw, ['sessionId', 'session_id', 'conversationId', 'conversation_id', 'threadId', 'thread_id'])),
@@ -166,8 +169,7 @@ export function normalizeSingleEvent(raw: unknown, index = 0): NormalizedEvoMate
     kind: normalizeFeedbackKind(stringFrom(readFirst(raw, ['kind', 'feedbackKind', 'feedback_kind']))),
     score: clampScore(numberFrom(readFirst(raw, ['score', 'rating', 'reward']))),
     geneId: stringFrom(readFirst(raw, ['geneId', 'gene_id', 'behaviorGeneId', 'behavior_gene_id'])),
-    signals,
-    route
+    signals
   };
 }
 
@@ -215,6 +217,14 @@ export function routeHookEvent(input: Pick<NormalizedEvoMateHookEvent, 'eventKin
   if (input.eventKind === 'user_message' || input.eventKind === 'advisor_request') return 'advisor';
   if (input.eventKind === 'unknown' && !input.content?.trim()) return 'ignore';
   return 'observe';
+}
+
+function normalizeRouteOverride(value: string | undefined): EvoMateHookRoute | undefined {
+  const normalized = normalizeToken(value || '', '');
+  if (normalized === 'advisor' || normalized === 'observe' || normalized === 'outcome' || normalized === 'ignore') {
+    return normalized;
+  }
+  return undefined;
 }
 
 export function createMobileChatEvent(input: Omit<EvoMateHookEvent, 'source' | 'channel'> & { source?: string }): EvoMateHookEvent {
