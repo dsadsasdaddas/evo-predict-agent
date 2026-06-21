@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
+import { SCHEMA_VERSION, computeAssetId } from '@evomap/gep-sdk';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { extractSignalsWithEvoMapLlm, getEvoMapLlmConfig, maintainNextStepWithEvoMapLlm, type MaintainedNextStepState } from './evomap-llm.js';
@@ -30,6 +31,7 @@ import {
   normalizeEvolutionState,
   previewFeedbackReward,
   selectBehaviorGeneDecision,
+  type BehaviorGene,
   type EvolutionState,
   type FeedbackInput,
   type RemoteEvolutionJob,
@@ -106,6 +108,33 @@ const memoryRouteSchema = z.object({
   input: z.string().optional(),
   source: z.string().default('memory_router'),
   signals: z.array(z.string()).optional()
+});
+
+const uploadedGeneSchema = z.object({
+  type: z.string().optional(),
+  id: z.string().min(1).max(160),
+  label: z.string().optional(),
+  title: z.string().optional(),
+  summary: z.string().optional(),
+  description: z.string().optional(),
+  category: z.enum(['repair', 'optimize', 'innovate', 'explore']).optional(),
+  signals: z.array(z.string()).optional(),
+  signals_match: z.array(z.string()).optional(),
+  strategy: z.array(z.string()).optional(),
+  weight: z.number().min(0).max(1).optional(),
+  fitness: z.number().min(0).max(1).optional(),
+  validation: z.array(z.string()).optional(),
+  constraints: z.record(z.unknown()).optional()
+}).passthrough();
+
+const geneUploadSchema = z.object({
+  gene: uploadedGeneSchema.optional(),
+  genes: z.array(uploadedGeneSchema).optional(),
+  publish: z.boolean().default(true),
+  source: z.string().default('gene_upload_api'),
+  metadata: z.record(z.string(), z.unknown()).optional()
+}).refine((value) => Boolean(value.gene || value.genes?.length), {
+  message: 'gene or genes is required'
 });
 
 app.get('/health', (c) => c.json({
@@ -199,6 +228,51 @@ app.get('/api/evolution/history', async (c) => {
     count: timeline.length,
     timeline,
     jobs
+  });
+});
+
+app.post('/api/evolution/genes/upload', async (c) => {
+  const parsed = geneUploadSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'invalid_gene_upload', details: parsed.error.flatten() }, 400);
+
+  const uploaded = [parsed.data.gene, ...(parsed.data.genes ?? [])].filter(Boolean) as UploadedGeneInput[];
+  const behaviorGenes = uploaded.map(normalizeUploadedBehaviorGene);
+  const gepGenes = behaviorGenes.map((gene, index) => toGepGeneAsset(gene, uploaded[index]));
+
+  const state = await loadState();
+  const activeGenes = mergeBehaviorGenes(state.activeGenes, behaviorGenes);
+  const nextState = normalizeEvolutionState({
+    ...state,
+    generation: state.generation + 1,
+    phase: 'update_behavior_genome',
+    activeGenes,
+    timeline: [
+      runtimeTimelineEvent({
+        type: 'gene_uploaded',
+        summary: `Uploaded ${behaviorGenes.length} behavior gene(s): ${behaviorGenes.map((gene) => gene.id).join(', ')}`,
+        score: 0.74,
+        geneId: behaviorGenes[0]?.id,
+        signals: ['gene_upload', 'evomap_gep', parsed.data.source]
+      }),
+      ...state.timeline
+    ]
+  });
+
+  const localStore = await writeGepGenes(gepGenes);
+  const cloud = parsed.data.publish
+    ? await publishGenesToEvoMap(gepGenes, { source: parsed.data.source, metadata: parsed.data.metadata })
+    : { status: 'skipped', reason: 'publish_disabled' };
+
+  await saveState(nextState);
+  return c.json({
+    ok: true,
+    action: 'gene_uploaded',
+    count: behaviorGenes.length,
+    activeGenes: behaviorGenes.map((gene) => ({ id: gene.id, label: gene.label, category: gene.category, weight: gene.weight, fitness: gene.fitness })),
+    gepAssets: gepGenes.map((gene) => ({ id: gene.id, asset_id: gene.asset_id, type: gene.type })),
+    local: localStore,
+    cloud,
+    stateSummary: compactStateSummary(nextState)
   });
 });
 
@@ -641,6 +715,154 @@ function compactDispatchBody(body: Record<string, unknown>): Record<string, unkn
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+type UploadedGeneInput = z.infer<typeof uploadedGeneSchema>;
+type GepGeneAsset = {
+  type: 'Gene';
+  schema_version: string;
+  id: string;
+  category: BehaviorGene['category'];
+  signals_match: string[];
+  strategy: string[];
+  constraints: Record<string, unknown>;
+  validation: string[];
+  asset_id: string;
+};
+
+function normalizeUploadedBehaviorGene(input: UploadedGeneInput): BehaviorGene {
+  const id = normalizeGeneId(input.id);
+  const signals = normalizeStringArray(input.signals ?? input.signals_match);
+  const strategy = normalizeStringArray(input.strategy);
+  const validation = normalizeStringArray(input.validation);
+  return {
+    id,
+    label: input.label?.trim() || input.title?.trim() || titleFromGeneId(id),
+    summary: input.summary?.trim() || input.description?.trim() || `Uploaded EvoMap behavior gene ${id}.`,
+    category: input.category ?? 'innovate',
+    signals: signals.length ? signals : ['uploaded_gene', 'evomap_gep'],
+    strategy: strategy.length ? strategy : ['Use this uploaded behavior gene when its signals match the current turn.'],
+    weight: clampScore(input.weight ?? 0.64),
+    fitness: clampScore(input.fitness ?? 0.64),
+    validation: validation.length ? validation : ['validate through EvoMate feedback loop']
+  };
+}
+
+function toGepGeneAsset(gene: BehaviorGene, raw: UploadedGeneInput): GepGeneAsset {
+  const asset = {
+    type: 'Gene' as const,
+    schema_version: SCHEMA_VERSION,
+    id: gene.id,
+    category: gene.category,
+    signals_match: gene.signals,
+    strategy: gene.strategy,
+    constraints: isRecord(raw.constraints)
+      ? raw.constraints
+      : { max_files: 8, forbidden_paths: ['.git', 'node_modules', 'dist'] },
+    validation: gene.validation
+  };
+  return stampGepAsset(asset);
+}
+
+function stampGepAsset<T extends Record<string, unknown>>(asset: T): T & { asset_id: string } {
+  const clean = { ...asset };
+  delete clean.asset_id;
+  return { ...clean, asset_id: computeAssetId(clean) };
+}
+
+function mergeBehaviorGenes(existing: BehaviorGene[], uploaded: BehaviorGene[]): BehaviorGene[] {
+  const byId = new Map(existing.map((gene) => [gene.id, gene]));
+  for (const gene of uploaded) {
+    byId.set(gene.id, { ...(byId.get(gene.id) ?? {}), ...gene });
+  }
+  return [...byId.values()];
+}
+
+async function writeGepGenes(genes: GepGeneAsset[]): Promise<{ status: 'written'; path: string; count: number; total: number }> {
+  const assetsDir = gepAssetsDir();
+  const genesPath = resolve(assetsDir, 'genes.json');
+  const store = await readGepGeneStore(genesPath);
+  const byId = new Map(store.genes.map((gene) => [gene.id, gene]));
+  for (const gene of genes) byId.set(gene.id, gene);
+  const nextStore = { version: store.version || 1, genes: [...byId.values()] };
+  await mkdir(dirname(genesPath), { recursive: true });
+  await writeFile(genesPath, `${JSON.stringify(nextStore, null, 2)}\n`, 'utf8');
+  return { status: 'written', path: genesPath, count: genes.length, total: nextStore.genes.length };
+}
+
+async function readGepGeneStore(path: string): Promise<{ version: number; genes: GepGeneAsset[] }> {
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as { version?: number; genes?: GepGeneAsset[] } | GepGeneAsset[];
+    if (Array.isArray(parsed)) return { version: 1, genes: parsed };
+    return { version: parsed.version ?? 1, genes: Array.isArray(parsed.genes) ? parsed.genes : [] };
+  } catch {
+    return { version: 1, genes: [] };
+  }
+}
+
+async function publishGenesToEvoMap(
+  genes: GepGeneAsset[],
+  context: { source: string; metadata?: Record<string, unknown> }
+): Promise<Record<string, unknown>> {
+  const hubUrl = (process.env.EVOMAP_HUB_URL || 'https://evomap.ai').replace(/\/$/, '');
+  const nodeId = process.env.EVOMAP_NODE_ID || '';
+  const token = process.env.EVOMAP_NODE_SECRET || process.env.EVOMAP_API_KEY || '';
+  if (!nodeId || !token) return { status: 'skipped', reason: 'missing_evomap_cloud_credentials', required: ['EVOMAP_NODE_ID', 'EVOMAP_NODE_SECRET or EVOMAP_API_KEY'] };
+
+  try {
+    const response = await fetch(`${hubUrl}/a2a/publish`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+        'x-evomap-node-id': nodeId
+      },
+      body: JSON.stringify({
+        node_id: nodeId,
+        source: context.source,
+        assets: genes,
+        metadata: {
+          product: 'evomate',
+          kind: 'behavior_gene_upload',
+          ...(context.metadata ?? {})
+        }
+      })
+    });
+    const bodyText = await response.text();
+    const body = parseMaybeJson(bodyText);
+    return response.ok
+      ? { status: 'published', hubUrl, httpStatus: response.status, body }
+      : { status: 'failed', hubUrl, httpStatus: response.status, body };
+  } catch (err) {
+    return { status: 'failed', hubUrl, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function parseMaybeJson(text: string): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text.slice(0, 800);
+  }
+}
+
+function gepAssetsDir(): string {
+  return process.env.GEP_ASSETS_DIR ? resolveFromProjectRoot(process.env.GEP_ASSETS_DIR) : resolveFromProjectRoot('assets');
+}
+
+function normalizeGeneId(value: string): string {
+  return normalizeHookText(value, `gene_uploaded_${Date.now()}`, 120).replace(/[^a-zA-Z0-9_:-]/g, '_');
+}
+
+function titleFromGeneId(id: string): string {
+  return id.replace(/^gene_/, '').replace(/[_:-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.map((item) => String(item).trim()).filter(Boolean))].slice(0, 24)
+    : [];
 }
 
 async function loadState(): Promise<EvolutionState> {
