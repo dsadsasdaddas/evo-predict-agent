@@ -1,4 +1,0 @@
-[submodule "vendor/codex"]
-	path = vendor/codex
-	url = https://github.com/dsadsasdaddas/codex.git
-	branch = wangyue/evomate-codex-tui
