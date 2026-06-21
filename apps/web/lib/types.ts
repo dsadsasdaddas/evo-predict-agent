@@ -117,6 +117,43 @@ export type MemoryRouteResponse = {
   generatedAt: string;
 };
 
+export type EvolutionResultResponse = {
+  ok: boolean;
+  schemaVersion: 'evomate.evolution_result.v1';
+  generatedAt: string;
+  maintainedBy: 'evomap_claude' | 'deterministic_fallback' | 'missing';
+  usedClaude: boolean;
+  enabled: boolean;
+  model?: string;
+  mode: 'live_proof' | 'ready';
+  latestEventId?: string;
+  before: {
+    title: string;
+    body: string;
+    score: number;
+  };
+  feedback: {
+    text: string;
+    eventId?: string;
+    score?: number;
+  };
+  mutation: {
+    text: string;
+    eventId?: string;
+    asset?: MaintainedNextStep['gepAsset'];
+  };
+  after: {
+    title: string;
+    body: string;
+    score: number;
+  };
+  nextAdvisor: string;
+  demoAction: string;
+  proof: Array<{ label: string; value: string; ok: boolean }>;
+  evomapSharing?: MaintainedNextStep['evomapSharing'];
+  nextStep?: MaintainedNextStep;
+};
+
 export type RemoteJob = {
   jobId: string;
   type: string;

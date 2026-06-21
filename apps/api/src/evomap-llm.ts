@@ -164,7 +164,6 @@ async function callEvoMapSignalExtractor(config: EvoMapLlmConfig, input: string,
       },
       body: JSON.stringify({
         model: config.model,
-        temperature: 0,
         messages: [
           {
             role: 'system',
@@ -336,7 +335,6 @@ async function callEvoMapNextStepMaintainer(
       },
       body: JSON.stringify({
         model: config.model,
-        temperature: 0.1,
         messages: [
           {
             role: 'system',

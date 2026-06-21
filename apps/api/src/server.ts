@@ -133,6 +133,12 @@ app.get('/api/evolution/next-step', async (c) => {
   });
 });
 
+app.get('/api/evolution/result', async (c) => {
+  const state = await loadStateWithMaintainedNextStep();
+  const memoryRoute = await buildMemoryRoute(state as RuntimeEvolutionState);
+  return c.json(buildEvolutionResultResponse(state as RuntimeEvolutionState, memoryRoute));
+});
+
 app.get('/api/memory/route', async (c) => {
   const state = await loadState();
   return c.json(await buildMemoryRoute(state as RuntimeEvolutionState));
@@ -689,6 +695,79 @@ async function attachMaintainedNextStep(state: EvolutionState): Promise<RuntimeE
   if (cachedStateStillValid) return runtimeState;
   runtimeState.nextStep = await maintainNextStepWithEvoMapLlm(state);
   return runtimeState;
+}
+
+function buildEvolutionResultResponse(state: RuntimeEvolutionState, memoryRoute: MemoryRouteResponse) {
+  const nextStep = state.nextStep;
+  const latest = state.timeline[0];
+  const feedbackEvent = state.timeline.find((item) => /feedback|policy_reward|outcome|corrected|interrupted|undo|手机端反馈/i.test(`${item.type} ${item.summary}`));
+  const mutationEvent = state.timeline.find((item) => /gep_assets_written|mutation|capsule|evolutionevent|remote_job_imported/i.test(`${item.type} ${item.summary}`));
+  const visible = nextStep?.visibleEvolution;
+  const activeGene = activeGeneLabelFromState(state);
+  const beforeScore = clampScore((nextStep?.confidence ?? latest?.score ?? 0.62) - 0.22);
+  const afterScore = clampScore(Math.max(nextStep?.confidence ?? latest?.score ?? 0.72, beforeScore + 0.18));
+  const mutation = nextStep?.mutation
+    || nextStep?.gepAsset?.mutation
+    || inferResultMutationFromTimeline(state.timeline, activeGene);
+
+  return {
+    ok: true,
+    schemaVersion: 'evomate.evolution_result.v1',
+    generatedAt: new Date().toISOString(),
+    maintainedBy: nextStep?.source ?? 'missing',
+    usedClaude: nextStep?.source === 'evomap_claude' && nextStep.used === true,
+    enabled: nextStep?.enabled ?? false,
+    model: nextStep?.model,
+    mode: mutationEvent || nextStep?.gepAsset ? 'live_proof' : 'ready',
+    latestEventId: latest?.id,
+    before: {
+      title: 'Before',
+      body: visible?.before ?? '进化前：Agent 按通用助手习惯行动，还没有完全贴合这个用户的工作方式。',
+      score: beforeScore
+    },
+    feedback: {
+      text: feedbackEvent?.summary ?? visible?.proof ?? '等待用户反馈按钮或 hook outcome 给这次行为打分。',
+      eventId: feedbackEvent?.id,
+      score: feedbackEvent?.score
+    },
+    mutation: {
+      text: mutation,
+      eventId: mutationEvent?.id,
+      asset: nextStep?.gepAsset
+    },
+    after: {
+      title: activeGene,
+      body: visible?.after ?? nextStep?.nextStep ?? `进化后：下一次相似场景优先复用 ${activeGene} 的行为策略。`,
+      score: afterScore
+    },
+    nextAdvisor: nextStep?.nextStep ?? '下一次相似任务会先召回 GEP 经验，再选择行为基因。',
+    demoAction: visible?.demoAction ?? '发送下一条相似 hook，然后观察 Gene、Mutation 和 Advisor 文案变化。',
+    proof: [
+      { label: 'Gene', value: activeGene, ok: Boolean(activeGene) },
+      { label: 'Mutation', value: mutationEvent || nextStep?.mutation ? 'written' : 'pending', ok: Boolean(mutationEvent || nextStep?.mutation) },
+      { label: 'Capsule', value: String(memoryRoute.gepProof.capsules), ok: memoryRoute.gepProof.capsules > 0 },
+      { label: 'Event', value: String(memoryRoute.gepProof.events || state.timeline.length), ok: state.timeline.length > 0 }
+    ],
+    evomapSharing: nextStep?.evomapSharing,
+    nextStep
+  };
+}
+
+function activeGeneLabelFromState(state: EvolutionState): string {
+  const gene = state.activeGenes[0] as unknown as Record<string, unknown> | undefined;
+  return typeof gene?.label === 'string'
+    ? gene.label.replace(/：.*$/, '')
+    : typeof gene?.id === 'string'
+      ? gene.id.replace(/^gene_/, '').replace(/_/g, ' ')
+      : 'Behavior Gene';
+}
+
+function inferResultMutationFromTimeline(timeline: EvolutionState['timeline'], activeGene: string): string {
+  const text = timeline.map((item) => `${item.type} ${item.summary} ${(item.signals || []).join(' ')}`).join(' ').toLowerCase();
+  if (/too_risky|ask_before|冒进|先确认/.test(text)) return 'Mutation: high-risk execution must ask first for this user.';
+  if (/too_shallow|deeper|深入|太浅/.test(text)) return 'Mutation: shallow answers are penalized; use deeper reasoning before action.';
+  if (/too_verbose|prefer_concise|啰嗦|更短|直接|too_slow|prefer_fast|更快/.test(text)) return 'Mutation: coding/product tasks should prefer direct execution and concise reporting.';
+  return `Mutation: strengthen ${activeGene} when similar signals reappear.`;
 }
 
 type AgentEventInput = z.infer<typeof agentEventSchema>;

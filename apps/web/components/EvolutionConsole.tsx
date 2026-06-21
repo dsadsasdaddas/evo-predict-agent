@@ -15,9 +15,10 @@ import {
 } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { API_URL, CLOUD_API_URL, fetchEvolutionHistory, fetchEvolutionState, fetchMemoryRoute, queueTraining, sendFeedback } from '@/lib/evomate-api';
+import { API_URL, CLOUD_API_URL, fetchEvolutionHistory, fetchEvolutionResult, fetchEvolutionState, fetchMemoryRoute, queueTraining, sendFeedback } from '@/lib/evomate-api';
 import type {
   EvolutionHistory,
+  EvolutionResultResponse,
   EvolutionState,
   EvolutionTimelineItem,
   FeedbackKind,
@@ -51,6 +52,7 @@ type LiveModel = {
   state: EvolutionState | null;
   history: EvolutionHistory | null;
   memoryRoute: MemoryRouteResponse | null;
+  evolutionResult: EvolutionResultResponse | null;
   status: LiveStatus;
   lastError: string | null;
   lastUpdatedAt: string | null;
@@ -268,7 +270,7 @@ export function MobileObserver() {
 
         <MemoryMoEPanel derived={derived} memoryRoute={model.memoryRoute} />
 
-        <EvolutionResultPanel derived={derived} memoryRoute={model.memoryRoute} />
+        <EvolutionResultPanel derived={derived} memoryRoute={model.memoryRoute} evolutionResult={model.evolutionResult} />
 
         <section className="mt-4 overflow-hidden rounded-[30px] border border-white/[0.08] bg-white/[0.035] p-4 shadow-[0_28px_90px_rgba(0,0,0,0.42)]">
           <div className="flex items-start justify-between gap-3">
@@ -368,6 +370,7 @@ function useEvoMateLive(): LiveModel {
   const [state, setState] = useState<EvolutionState | null>(null);
   const [history, setHistory] = useState<EvolutionHistory | null>(null);
   const [memoryRoute, setMemoryRoute] = useState<MemoryRouteResponse | null>(null);
+  const [evolutionResult, setEvolutionResult] = useState<EvolutionResultResponse | null>(null);
   const [status, setStatus] = useState<LiveStatus>('connecting');
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -377,16 +380,18 @@ function useEvoMateLive(): LiveModel {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextState, nextHistory, nextMemoryRoute] = await Promise.all([
+      const [nextState, nextHistory, nextMemoryRoute, nextEvolutionResult] = await Promise.all([
         fetchEvolutionState(),
         fetchEvolutionHistory(24, true),
-        fetchMemoryRoute().catch(() => null)
+        fetchMemoryRoute().catch(() => null),
+        fetchEvolutionResult().catch(() => null)
       ]);
       const latest = nextState.timeline?.[0];
       const stamp = [nextState.generation, nextState.phase, latest?.id, latest?.createdAt, nextState.metrics?.yesnessScore].join(':');
       setState(nextState);
       setHistory(nextHistory);
       setMemoryRoute(nextMemoryRoute);
+      setEvolutionResult(nextEvolutionResult);
       setStatus('live');
       setLastError(null);
       if (stamp !== stateStamp.current) {
@@ -443,7 +448,7 @@ function useEvoMateLive(): LiveModel {
     }
   }, [refresh]);
 
-  return { state, history, memoryRoute, status, lastError, lastUpdatedAt, refresh, feedback, train, busy, trainReceipt };
+  return { state, history, memoryRoute, evolutionResult, status, lastError, lastUpdatedAt, refresh, feedback, train, busy, trainReceipt };
 }
 
 function useDerivedState(state: EvolutionState | null, history: EvolutionHistory | null) {
@@ -947,12 +952,14 @@ function MemoryMoEPanel({
 
 function EvolutionResultPanel({
   derived,
-  memoryRoute
+  memoryRoute,
+  evolutionResult
 }: {
   derived: ReturnType<typeof useDerivedState>;
   memoryRoute: MemoryRouteResponse | null;
+  evolutionResult: EvolutionResultResponse | null;
 }) {
-  const result = buildEvolutionResult(derived, memoryRoute);
+  const result = evolutionResult ? buildEvolutionResultFromApi(evolutionResult) : buildEvolutionResult(derived, memoryRoute);
 
   return (
     <section className="mt-4 overflow-hidden rounded-[28px] border border-[#8dffcc]/14 bg-[#07110f]/88 p-4 shadow-[0_26px_88px_rgba(141,255,204,0.08)]">
@@ -1040,6 +1047,22 @@ function BehaviorResultCard({
       <p className="mt-1 line-clamp-3 text-[11px] leading-4 text-white/46">{body}</p>
     </div>
   );
+}
+
+function buildEvolutionResultFromApi(response: EvolutionResultResponse) {
+  return {
+    mode: response.usedClaude ? 'claude' : response.mode === 'live_proof' ? 'live proof' : 'fallback',
+    beforeTitle: response.before.title,
+    beforeBody: response.before.body,
+    beforeScore: response.before.score,
+    feedback: response.feedback.text,
+    mutation: response.mutation.text,
+    afterTitle: response.after.title,
+    afterBody: response.after.body,
+    afterScore: response.after.score,
+    nextAdvisor: response.nextAdvisor,
+    proofs: response.proof
+  };
 }
 
 function buildEvolutionResult(

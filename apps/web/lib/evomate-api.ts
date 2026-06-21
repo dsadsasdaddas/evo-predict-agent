@@ -1,6 +1,7 @@
 import type {
   AnalyzeResponse,
   EvolutionHistory,
+  EvolutionResultResponse,
   EvolutionState,
   FeedbackKind,
   FeedbackResponse,
@@ -54,6 +55,10 @@ export function fetchEvolutionHistory(limit = 24, jobs = true) {
 
 export function fetchMemoryRoute() {
   return requestJson<MemoryRouteResponse>('/api/memory/route', { timeoutMs: 4000 });
+}
+
+export function fetchEvolutionResult() {
+  return requestJson<EvolutionResultResponse>('/api/evolution/result', { timeoutMs: 8000 });
 }
 
 export function analyzeInteraction(input: string, source = 'web_dashboard') {
