@@ -266,7 +266,77 @@ apps/web/components/EvolutionConsole.tsx → MemoryMoEPanel
 
 ---
 
-## 7. Advisor 是怎么注入 Codex 的
+## 7. Git / 本地监听：Workspace Sensor Layer
+
+这一层让 EvoMate 不只知道用户说了什么，还知道用户的真实工作区发生了什么：当前 App、Git 分支、文件变更、终端命令成功/失败。
+
+```mermaid
+flowchart TB
+    subgraph Local["本地电脑 / Developer Workspace"]
+        Window["Active Window\nChrome / Codex / Terminal / Cursor"]
+        Git["Git Status\nbranch / changed / staged / untracked"]
+        Terminal["Zsh Terminal Hook\npreexec / precmd / exit code"]
+    end
+
+    Window --> LocalAgent["apps/local-agent\nactive-window monitor"]
+    Git --> LocalAgent
+    Terminal --> ZshHook["apps/local-agent/shell\nevomate-zsh-hook.zsh"]
+
+    LocalAgent --> HookAPI["POST /api/hook-events"]
+    ZshHook --> HookAPI
+
+    HookAPI --> Normalize["@evomate/hooks\nnormalizeHookInput"]
+    Normalize --> RouteObserve["observe route\nworkspace context"]
+    Normalize --> RouteOutcome["outcome route\nsuccess / failure reward"]
+
+    RouteObserve --> Timeline["EvoMate Timeline"]
+    RouteOutcome --> Feedback["Feedback Reward"]
+    Feedback --> GEP["GEP Mutation / EvolutionEvent"]
+    Timeline --> RepoExpert["Memory MoE: Repo Expert"]
+    Timeline --> ValidationExpert["Memory MoE: Validation Expert"]
+    GEP --> ValidationExpert
+
+    RepoExpert --> Advisor["Advisor Context"]
+    ValidationExpert --> Advisor
+    Advisor --> Codex["Codex additional_context"]
+```
+
+事件例子：
+
+```text
+local-agent:git        → git_status_changed      → Repo Expert
+terminal:zsh           → terminal_command_done   → Validation Expert / Reward
+local-agent:active-window → active_window_changed → Workflow Context
+```
+
+代码位置：
+
+```text
+apps/local-agent/src/index.ts                    # Git / active window / terminal event CLI
+apps/local-agent/shell/evomate-zsh-hook.zsh      # zsh preexec/precmd hook
+packages/evomate-hooks/src/schema.ts             # hook protocol normalize + route
+apps/api/src/server.ts                           # /api/hook-events + Memory MoE route
+```
+
+启动方式：
+
+```bash
+EVOMATE_API_URL=http://127.0.0.1:8787 \
+  npm run evomate:local -- monitor --workspace /Users/wangyue/evo/evo-predict-agent
+
+source /Users/wangyue/evo/evo-predict-agent/apps/local-agent/shell/evomate-zsh-hook.zsh
+```
+
+路演表达：
+
+```text
+Git 和本地监听让 EvoMate 从聊天记忆升级成真实工作流记忆。
+它知道当前分支、未提交变更、命令是否失败，所以 Advisor 会在下一轮自动调整策略。
+```
+
+---
+
+## 8. Advisor 是怎么注入 Codex 的
 
 ```mermaid
 flowchart LR
@@ -300,7 +370,7 @@ apps/api/src/server.ts → prepareAdvisor() / buildAdvisorPrompt()
 
 ---
 
-## 8. 反馈如何变成进化
+## 9. 反馈如何变成进化
 
 ```mermaid
 flowchart TB
@@ -333,7 +403,7 @@ manual_score  (score - 0.5) * 2
 
 ---
 
-## 9. Gene 上传 / EvoMap Cloud 预留
+## 10. Gene 上传 / EvoMap Cloud 预留
 
 ```mermaid
 flowchart LR
@@ -355,7 +425,7 @@ POST /api/evolution/genes/upload
 
 ---
 
-## 10. 公网演示
+## 11. 公网演示
 
 稳定入口：
 
@@ -374,7 +444,7 @@ http://127.0.0.1:3333/graph
 
 ---
 
-## 11. 快速启动
+## 12. 快速启动
 
 安装依赖：
 
@@ -403,7 +473,7 @@ http://127.0.0.1:3333/mobile
 
 ---
 
-## 12. 验证闭环
+## 13. 验证闭环
 
 核心 smoke：
 
@@ -442,7 +512,7 @@ npm run check -w apps/api
 
 ---
 
-## 13. 常用命令
+## 14. 常用命令
 
 ```bash
 npm run evomate:api
@@ -472,7 +542,7 @@ npm run evomate:smoke -- --llm
 
 ---
 
-## 14. 关键目录
+## 15. 关键目录
 
 ```text
 apps/api/                         # EvoMate API: hooks, advisor, feedback, Memory MoE, GEP writes
@@ -490,7 +560,7 @@ vendor/codex/                     # vendored Codex pointer；真实改造在 /Us
 
 ---
 
-## 15. 路演讲法
+## 16. 路演讲法
 
 ```text
 今天的 AI Agent 很聪明，但不会真正成长。
@@ -511,7 +581,7 @@ EvoMate 做的是 Agent 的自进化层：
 
 ---
 
-## 16. 安全边界
+## 17. 安全边界
 
 - `.env.local` 被 gitignore，真实 EvoMap key 不提交。
 - `memory/`、`assets/events.jsonl` 默认忽略，避免提交本地会话和反馈流水。
